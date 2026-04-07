@@ -20,7 +20,28 @@ Sections within each release:
 
 ## [Unreleased]
 
-Changes on `main` that have not yet been cut as a tagged release. Users on the default branch (`git clone` without `-b <tag>`) already have these; users who pinned to a specific tag do not.
+Changes on `main` that have not yet been cut as a tagged release.
+
+### Added
+
+- None yet.
+
+### Changed
+
+- None yet.
+
+### Fixed
+
+- None yet.
+
+---
+
+## [0.1.1] — 2026-04-08
+
+Marketplace support, enforcement-first repositioning, and competitive comparison. No behavior changes to hooks, agents, or the installer logic — existing Mode 1 users who `git pull` + re-run `./install.sh` will not notice any functional difference.
+
+Repo: https://github.com/itsaldrincr/claude-code-fsm-workflow
+Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.1
 
 ### Added
 
@@ -28,10 +49,11 @@ Changes on `main` that have not yet been cut as a tagged release. Users on the d
 - **`/fsm-setup-hooks` slash command** — new command at `plugins/fsm-workflow/commands/fsm-setup-hooks.md` that walks users through installing the enforcement hooks after a marketplace install (Mode 2). The plugin marketplace format does not currently support user-level hook registration, so this command is declared mandatory for marketplace installs in the README.
 - **Competitive comparison table** in the README comparing this package against `wshobson/agents`, `gsd-build/get-shit-done`, `Yeachan-Heo/oh-my-claudecode`, and `disler/claude-code-hooks-multi-agent-observability`. Covers enforcement properties (where this package wins) and breadth/ecosystem properties (where competitors win).
 - **Three install modes** documented in the README: Mode 1 (full install via `install.sh`), Mode 2 (marketplace via `/plugin install` + `/fsm-setup-hooks`), Mode 3 (ask Claude via `INSTALL_FOR_CLAUDE.md`).
+- **`CHANGELOG.md`** following Keep a Changelog format, with a backfilled `[0.1.0]` section and links to GitHub compare views.
 
 ### Changed
 
-- **Repository restructured** to match the canonical Claude Code plugin layout. `agents/`, `commands/`, and `templates/` moved from the repo root to `plugins/fsm-workflow/`. The `hooks/` directory remains at the root because the plugin marketplace does not ship hooks. `install.sh` and `INSTALL_FOR_CLAUDE.md` updated for the new paths. Mode 1 (full install) continues to work exactly as before; existing users who pull + re-run `install.sh` will not notice the change.
+- **Repository restructured** to match the canonical Claude Code plugin layout. `agents/`, `commands/`, and `templates/` moved from the repo root to `plugins/fsm-workflow/`. The `hooks/` directory remains at the root because the plugin marketplace does not ship hooks. `install.sh` and `INSTALL_FOR_CLAUDE.md` updated for the new paths.
 - **README positioning** rewritten around "discipline enforced by hooks, not personas." The opening bullets now lead with hook enforcement, context isolation, and nonce-proof reads — the properties that differentiate this package from persona-based multi-agent collections.
 
 ### Fixed
@@ -80,5 +102,6 @@ Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0
 
 ---
 
-[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.1
 [0.1.0]: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.0
