@@ -225,6 +225,10 @@ cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json
 
 Designed and battle-tested by a fleet operator running a stable of Telegram bots on Google Compute Engine. The discipline SOP + role separation + nonce-proof pattern evolved from watching agents drift, re-reading the same context fifteen times, and writing code that contradicted the spec two hops earlier. The hooks exist because mechanical enforcement beats "please follow the rules" every single time.
 
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md) for version history. Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/). Check the `[Unreleased]` section at the top to see what has landed on `main` since the last tagged release.
+
 ## License
 
 MIT — see `LICENSE`.
