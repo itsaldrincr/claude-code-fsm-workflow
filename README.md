@@ -18,6 +18,30 @@ Most multi-agent packages give you "Senior Developer", "UI Expert", "QA Engineer
 
 **Where it isn't better**: this is built for multi-file builds with verification loops. For one-shot questions, quick scripts, or creative brainstorming, a single persona agent is simpler and the FSM overhead is absurd. Use the right tool for the task.
 
+## How this compares to other Claude Code multi-agent packages
+
+Based on a 2026-04-08 survey of four competing packages (stars as of survey date). Every competitor ships "disciplined" or "orchestrated" in their marketing copy; this table reflects what they actually enforce mechanically versus what they describe in prompts.
+
+| Property | **This package** | `wshobson/agents`<br/>(33k★) | `gsd-build/get-shit-done`<br/>(49k★) | `oh-my-claudecode`<br/>(25k★) | `disler/hooks-observability`<br/>(1.3k★) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Write-authority enforcement (blocks unauthorized agents from writing shared state) | ✅ hook returns `deny` | ❌ | ⚠️ `O_EXCL` lock (prevents races, not unauth writes) | ❌ | ❌ |
+| Context isolation (workers physically cannot read `MAP.md` / `CLAUDE.md`) | ✅ hook returns `deny` | ❌ | ❌ | ❌ | ❌ |
+| Nonce-proof reads (worker must echo checkpoint hex to complete a task) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `PostToolUse` discipline gate on code (blocks non-compliant `.py` / `.ts` writes) | ✅ XML violation block | ❌ | ❌ (only validates commit msg) | ❌ | ❌ |
+| Stateless workers with single-input contract (re-read from disk every turn) | ✅ | ❌ prompt stacking | ⚠️ fresh context per agent | ❌ | N/A |
+| Hook-enforced role separation | ✅ | ❌ prompt only | ❌ prompt only | ❌ prompt only | N/A |
+| Agent count / breadth | 22 | **182** | 24 | 19 | 2 |
+| Plugin marketplace / skills system | ❌ | **✅ 75 plugins, 147 skills** | ⚠️ partial | ⚠️ 11+ skills | ❌ |
+| Multi-runtime support (Codex, Gemini, etc.) | ❌ | ❌ | **✅ 13+ runtimes at install time** | ⚠️ via tmux | ❌ |
+| Observability / live tracing | ❌ | ❌ | ❌ | ⚠️ hook observers | **✅ Vue dashboard + WebSocket + SQLite** |
+| Published benchmarks | ❌ | **✅ PluginEval 3-layer framework** | ❌ | ⚠️ SWE-bench harness (no results) | ❌ |
+
+**Reading the table**: the top six rows are about enforcement — whether the package physically prevents an agent from doing the wrong thing. This package is the only one that returns `permissionDecision: deny` from hooks on anything more substantial than `rm -rf`. Every competitor relies on prompt instructions and trusts the agent to follow them.
+
+The bottom five rows are about breadth, ecosystem, and instrumentation — where other packages genuinely beat this one. `wshobson/agents` wins on agent breadth and has a real evaluation system. `gsd-build` wins on runtime DAG analysis and multi-runtime support. `disler` is the only package with serious observability. If your priority is "a huge catalog of domain experts" or "a live dashboard of what my agents are doing," those packages serve different needs than this one does.
+
+**Pick this package when**: you need disciplined multi-file builds with verification loops and you have been burned by agents drifting, hallucinating, writing to the wrong files, or claiming work done without proof. **Pick a different package when**: you want domain breadth, a marketplace, heterogeneous LLM orchestration, or a live visual dashboard — those are all things the packages above do better, and they can often be layered on top of this one without conflict.
+
 ## What this is
 
 Claude Code already supports subagents. This package wires 22 of them together into a disciplined pipeline with strict role separation (orchestrator, dispatcher, scouts, architect, planner, workers, auditors, fixers, test-runner, bookkeepers), hook-level enforcement of context isolation and write authority, and a brainstorming → build → audit → test → close lifecycle that runs autonomously once you've said "build it."
