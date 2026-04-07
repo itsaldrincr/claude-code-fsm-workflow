@@ -1,0 +1,16 @@
+{
+  "_comment": "Project-level settings template. Installed by doc-writer (pre-workflow). Layered on top of ~/.claude/settings.json.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/discipline-gate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+._*
+
+# Editor state
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Installer backups and temp state (created if the installer is ever run in-place)
+*.bak.*
+*.tmp
+settings.json.bak.*
+
+# Local testing artifacts
+test-output/
+fake-home/
