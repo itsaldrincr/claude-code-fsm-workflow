@@ -1,16 +1,26 @@
 # FSM Workflow for Claude Code
 
-A multi-agent finite-state-machine workflow that turns Claude Code into an autonomous engineering pipeline. Brainstorm → spec → architect → plan → execute → audit → test → close, with mechanical enforcement via hooks so agents can't drift off the rails.
+**Discipline is enforced by hooks, not personas.** A multi-agent pipeline for Claude Code where 22 subagents operate under strict role separation, context isolation, and nonce-proof reads — so agents can't drift, contradict the spec, or claim work done without proof. Brainstorm → spec → architect → plan → execute → audit → test → close, with mechanical enforcement at every boundary.
+
+## Why this beats persona-based agent packages
+
+Most multi-agent packages give you "Senior Developer", "UI Expert", "QA Engineer" — persona prompts that bias the model's output distribution but do nothing mechanical to stop bad behavior. This package replaces persona with enforcement. At a glance:
+
+- **Hook enforcement, not prompt hints** — workers physically cannot read `MAP.md` / `CLAUDE.md`, cannot write the task tracker, cannot force a weaker model. `permissionDecision: deny` returns from hooks regardless of what the model "wants" to do. Persona is a suggestion; this is a gate.
+- **Context isolation by construction** — workers receive exactly one input: an absolute path to their task file. Everything they need is listed inside it. No ambient context, no drift across compactions, no "I remember the spec said..." hallucinations.
+- **Single-writer state** — only `task-planner` and `session-closer` may touch `MAP.md`. The orchestrator flips status fields; workers never write shared state. This kills the entire class of "helpful" cross-writes that corrupt trackers in loose multi-agent setups.
+- **Nonce-proof reads** — every task file carries a `checkpoint` hex string. Workers must echo the current nonce in their Registers update. Forgot to read the file? Can't produce the nonce. Task not done. Challenge-response, not vibes.
+- **Stateless workers** — every turn re-reads from disk. Session resume, context compaction, and mid-task recovery are all trivially correct: there is no "memory" to lose.
+- **Explicit FSM with verifiable transitions** — tasks have states (`PENDING` → `IN_PROGRESS` → `VERIFY` → `DONE`), acceptance criteria that check against disk, and a session that won't close until audit and tests are both clean.
+- **Parallel waves with dependency cascade** — workers run concurrently within a wave. The orchestrator flips status as tasks return and auto-dispatches the next wave when dependencies resolve.
+- **Coding discipline is a PostToolUse gate** — every `.py` / `.ts` write runs a discipline check. Violations return as a compact XML block the agent treats like a compiler error: read, fix, retry in-loop.
+- **One-command install** — drop 22 agents, 4 hooks, 1 slash command, and project templates into `~/.claude/` with `./install.sh`. Idempotent; re-runnable; backs up your existing settings before touching anything.
+
+**Where it isn't better**: this is built for multi-file builds with verification loops. For one-shot questions, quick scripts, or creative brainstorming, a single persona agent is simpler and the FSM overhead is absurd. Use the right tool for the task.
 
 ## What this is
 
-Claude Code already supports subagents. This package wires 22 of them together into a disciplined pipeline with:
-
-- **Strict role separation** — orchestrator never writes code; workers never write the task map; auditors never fix bugs. Enforced by hooks, not vibes.
-- **Stateless workers** — every FSM executor reads everything from disk on each turn. No conversation memory means no drift across context compactions.
-- **Nonce-proof reads** — each task file carries a checkpoint hex string. Workers must echo the current nonce in their Registers update, proving they actually read the file.
-- **Discipline gate** — every `.py` / `.ts` write is post-processed by a hook that blocks on coding-discipline violations. The agent treats the block as a compiler error and fixes in-loop.
-- **Brainstorming mode + auto pipeline** — you talk to the orchestrator about what you want. It captures specs, runs research, dispatches the architect, plans tasks, runs executors in waves, audits, tests, and closes out — all without you babysitting.
+Claude Code already supports subagents. This package wires 22 of them together into a disciplined pipeline with strict role separation (orchestrator, dispatcher, scouts, architect, planner, workers, auditors, fixers, test-runner, bookkeepers), hook-level enforcement of context isolation and write authority, and a brainstorming → build → audit → test → close lifecycle that runs autonomously once you've said "build it."
 
 Read `templates/CLAUDE.md` for the full SOP. It's the source of truth for how the workflow runs; the agents and hooks are just the mechanical enforcement of what's written there.
 
