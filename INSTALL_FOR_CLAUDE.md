@@ -6,9 +6,15 @@ Paste the entire contents of this file into a fresh Claude Code session. Claude 
 
 ## Task for Claude
 
-You are installing the **FSM Workflow** for Claude Code on behalf of the user. This package ships a multi-agent pipeline (22 subagents, 4 user-level hooks, 1 slash command, and project templates) that lives under `~/.claude/`.
+You are installing the **FSM Workflow** for Claude Code on behalf of the user. This package ships a multi-agent pipeline (22 subagents, 4 user-level hooks, 2 slash commands, and project templates) that lives under `~/.claude/`.
 
-The package directory is on the user's machine. **Before you do anything, ask the user for the absolute path to the package directory** (it's typically `~/Desktop/fsm-workflow/` but could be elsewhere). Do NOT guess.
+The package directory is on the user's machine. **Before you do anything, ask the user for the absolute path to the package directory**. If they don't have it yet, offer to clone fresh:
+
+```bash
+git clone https://github.com/itsaldrincr/claude-code-fsm-workflow.git ~/claude-code-fsm-workflow
+```
+
+And use `~/claude-code-fsm-workflow` as the package path. Do NOT guess the path.
 
 Once you have the path, follow these steps in order. Stop and report to the user if any step fails.
 
@@ -19,10 +25,11 @@ Run these checks and report the results:
 ```bash
 PKG=<path the user gave you>
 ls "$PKG/install.sh" "$PKG/README.md"
-ls "$PKG/agents/" | wc -l          # should be 22
-ls "$PKG/hooks/"  | wc -l          # should be 4
-ls "$PKG/commands/" | wc -l        # should be 1
-ls "$PKG/templates/"               # should show CLAUDE.md, settings.json, hooks/
+ls "$PKG/plugins/fsm-workflow/agents/" | wc -l      # should be 22
+ls "$PKG/hooks/" | wc -l                            # should be 4
+ls "$PKG/plugins/fsm-workflow/commands/" | wc -l    # should be 2
+ls "$PKG/plugins/fsm-workflow/templates/"           # should show CLAUDE.md, settings.json, hooks/
+ls "$PKG/.claude-plugin/marketplace.json"           # marketplace manifest
 ```
 
 If any of those fail, the package is incomplete or the path is wrong — stop and tell the user.

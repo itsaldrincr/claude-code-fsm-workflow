@@ -43,18 +43,21 @@ mkdir -p "$CLAUDE_DIR/agents" \
          "$CLAUDE_DIR/commands" \
          "$CLAUDE_DIR/templates/hooks"
 
-cp "$SCRIPT_DIR"/agents/*.md               "$CLAUDE_DIR/agents/"
-cp "$SCRIPT_DIR"/hooks/*.sh                "$CLAUDE_DIR/hooks/"
-cp "$SCRIPT_DIR"/commands/*.md             "$CLAUDE_DIR/commands/"
-cp "$SCRIPT_DIR"/templates/CLAUDE.md       "$CLAUDE_DIR/templates/"
-cp "$SCRIPT_DIR"/templates/settings.json   "$CLAUDE_DIR/templates/"
-cp "$SCRIPT_DIR"/templates/hooks/discipline-gate.sh "$CLAUDE_DIR/templates/hooks/"
+PLUGIN_DIR="$SCRIPT_DIR/plugins/fsm-workflow"
+
+cp "$PLUGIN_DIR"/agents/*.md                         "$CLAUDE_DIR/agents/"
+cp "$SCRIPT_DIR"/hooks/*.sh                          "$CLAUDE_DIR/hooks/"
+cp "$PLUGIN_DIR"/commands/*.md                       "$CLAUDE_DIR/commands/"
+cp "$PLUGIN_DIR"/templates/CLAUDE.md                 "$CLAUDE_DIR/templates/"
+cp "$PLUGIN_DIR"/templates/settings.json             "$CLAUDE_DIR/templates/"
+cp "$PLUGIN_DIR"/templates/hooks/discipline-gate.sh  "$CLAUDE_DIR/templates/hooks/"
 
 chmod +x "$CLAUDE_DIR/hooks/"*.sh
 chmod +x "$CLAUDE_DIR/templates/hooks/discipline-gate.sh"
 
-AGENT_COUNT=$(ls "$SCRIPT_DIR/agents/" | wc -l | tr -d ' ')
-echo "Copied $AGENT_COUNT agents, 4 user-level hooks, 1 slash command, project templates"
+AGENT_COUNT=$(ls "$PLUGIN_DIR/agents/" | wc -l | tr -d ' ')
+COMMAND_COUNT=$(ls "$PLUGIN_DIR/commands/" | wc -l | tr -d ' ')
+echo "Copied $AGENT_COUNT agents, 4 user-level hooks, $COMMAND_COUNT slash commands, project templates"
 
 # --- 4. Merge hook registrations into settings.json ---
 HOOKS_DIR="$CLAUDE_DIR/hooks"

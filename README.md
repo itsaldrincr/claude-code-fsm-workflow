@@ -52,44 +52,52 @@ Read `templates/CLAUDE.md` for the full SOP. It's the source of truth for how th
 
 ```
 fsm-workflow/
-├── README.md                     # this file
-├── install.sh                    # idempotent installer
-├── INSTALL_FOR_CLAUDE.md         # paste-ready prompt for another Claude to install
-├── agents/                       # 22 subagent definitions → ~/.claude/agents/
-│   ├── architect.md
-│   ├── bug-scanner.md
-│   ├── code-auditor.md
-│   ├── code-fixer.md
-│   ├── code-reviewer.md
-│   ├── debugger.md
-│   ├── dep-checker.md
-│   ├── dispatcher.md
-│   ├── doc-writer.md
-│   ├── explore-scout.md
-│   ├── explore-superscout.md
-│   ├── file-lister.md
-│   ├── fsm-executor.md
-│   ├── fsm-integrator.md
-│   ├── mock-server.md
-│   ├── mockup-verifier.md
-│   ├── research-scout.md
-│   ├── session-closer.md
-│   ├── session-handoff.md
-│   ├── spec-writer.md
-│   ├── task-planner.md
-│   └── test-runner.md
-├── hooks/                        # user-level hooks → ~/.claude/hooks/
-│   ├── block-map-writes.sh       # only task-planner + session-closer may touch MAP.md
-│   ├── block-worker-reads.sh     # workers can't read MAP.md / CLAUDE.md (enforces context isolation)
-│   ├── block-model-override.sh   # stops callers from forcing a weaker model on an agent
-│   └── surface-map-on-start.sh   # SessionStart: prints MAP.md status summary for recovery awareness
-├── commands/
-│   └── init-workflow.md          # /init-workflow slash command → ~/.claude/commands/
-└── templates/                    # project scaffold → ~/.claude/templates/
-    ├── CLAUDE.md                 # full workflow SOP (coding discipline + task coordination)
-    ├── settings.json             # project-level settings with discipline gate registered
-    └── hooks/
-        └── discipline-gate.sh    # PostToolUse hook: blocks .py/.ts writes with violations
+├── README.md                                   # this file
+├── LICENSE                                     # MIT
+├── install.sh                                  # idempotent full installer (Mode 1)
+├── INSTALL_FOR_CLAUDE.md                       # paste-ready prompt for another Claude (Mode 3)
+├── .claude-plugin/
+│   └── marketplace.json                        # Claude Code plugin marketplace manifest
+├── hooks/                                      # user-level hooks → ~/.claude/hooks/ (installed by install.sh only)
+│   ├── block-map-writes.sh                     # only task-planner + session-closer may touch MAP.md
+│   ├── block-worker-reads.sh                   # workers can't read MAP.md / CLAUDE.md (enforces context isolation)
+│   ├── block-model-override.sh                 # stops callers from forcing a weaker model on an agent
+│   └── surface-map-on-start.sh                 # SessionStart: MAP.md status summary for recovery awareness
+└── plugins/
+    └── fsm-workflow/                           # the marketplace plugin (Mode 2 entry point)
+        ├── .claude-plugin/
+        │   └── plugin.json                     # plugin metadata
+        ├── agents/                             # 22 subagent definitions → ~/.claude/agents/
+        │   ├── architect.md
+        │   ├── bug-scanner.md
+        │   ├── code-auditor.md
+        │   ├── code-fixer.md
+        │   ├── code-reviewer.md
+        │   ├── debugger.md
+        │   ├── dep-checker.md
+        │   ├── dispatcher.md
+        │   ├── doc-writer.md
+        │   ├── explore-scout.md
+        │   ├── explore-superscout.md
+        │   ├── file-lister.md
+        │   ├── fsm-executor.md
+        │   ├── fsm-integrator.md
+        │   ├── mock-server.md
+        │   ├── mockup-verifier.md
+        │   ├── research-scout.md
+        │   ├── session-closer.md
+        │   ├── session-handoff.md
+        │   ├── spec-writer.md
+        │   ├── task-planner.md
+        │   └── test-runner.md
+        ├── commands/
+        │   ├── init-workflow.md                # /init-workflow — bootstrap a project
+        │   └── fsm-setup-hooks.md              # /fsm-setup-hooks — complete Mode 2 install
+        └── templates/                          # project scaffold → ~/.claude/templates/
+            ├── CLAUDE.md                       # full workflow SOP
+            ├── settings.json                   # project-level settings with discipline gate registered
+            └── hooks/
+                └── discipline-gate.sh          # PostToolUse hook: blocks .py/.ts writes with violations
 ```
 
 ## Dependencies
@@ -100,27 +108,52 @@ fsm-workflow/
   - Linux: `sudo apt install jq` (or your distro's equivalent)
 - **bash** — the installer and all hooks are bash scripts. Works on macOS and Linux. Windows users should run under WSL.
 
-## Install (human path)
+## Install — two modes
+
+There are two ways to install this package, and they are **not equivalent**. Pick carefully.
+
+### Mode 1: Full install (recommended — includes the enforcement hooks)
 
 ```bash
-cd ~/Desktop/fsm-workflow          # or wherever you extracted the package
+git clone https://github.com/itsaldrincr/claude-code-fsm-workflow.git
+cd claude-code-fsm-workflow
 ./install.sh
 ```
 
-The installer is **idempotent**. Run it as many times as you like — it strips any old registrations pointing into `~/.claude/hooks/` and re-adds fresh ones, so there are no duplicates.
+This installs:
 
-What it does, in order:
+- 22 agents → `~/.claude/agents/`
+- 4 user-level hooks → `~/.claude/hooks/` **← this is the moat of the package**
+- 2 slash commands (`/init-workflow`, `/fsm-setup-hooks`) → `~/.claude/commands/`
+- Project templates (`CLAUDE.md`, discipline gate) → `~/.claude/templates/`
+- Hook registrations merged idempotently into `~/.claude/settings.json`
 
-1. Verifies `jq` is installed and `~/.claude/` exists.
-2. Backs up your existing `~/.claude/settings.json` to `settings.json.bak.<unix-timestamp>`.
-3. Copies `agents/`, `hooks/`, `commands/`, and `templates/` into `~/.claude/`.
-4. `chmod +x` on every shell script.
-5. Merges the four hook registrations into `~/.claude/settings.json` using `jq`. **Your existing hooks, MCP servers, and other settings are preserved.**
-6. Validates the final JSON is well-formed. If not, it points you at the backup.
+**This is the install you want.** The hooks are what make this package different from every other Claude Code agent collection. Without them, you have 22 agents with no enforcement.
 
-## Install (ask another Claude to do it)
+The installer is idempotent — safe to re-run. It backs up your existing `settings.json` before any change.
 
-If you'd rather not run shell scripts yourself, open Claude Code in a fresh session and paste the entire contents of `INSTALL_FOR_CLAUDE.md` into the prompt. That file is a ready-to-execute instruction set that walks Claude through the install, with safety checks and validation at every step.
+### Mode 2: Claude Code plugin marketplace (agents only — hooks must be added in a second step)
+
+```
+/plugin marketplace add itsaldrincr/claude-code-fsm-workflow
+/plugin install fsm-workflow
+/fsm-setup-hooks
+```
+
+The Claude Code plugin marketplace format does not currently support installing user-level hooks. If you install via `/plugin install fsm-workflow`, you get the agents, commands, and templates — but **the hooks will not be registered**, which means:
+
+- Workers can read `MAP.md` and `CLAUDE.md` (no context isolation)
+- Any agent can write `MAP.md` (no single-writer authority)
+- The discipline gate will not fire on `.py` / `.ts` writes
+- The workflow loses its entire enforcement story
+
+**You must run `/fsm-setup-hooks` immediately after `/plugin install fsm-workflow`** to complete the install. That command walks you through cloning the repo and running `./install.sh` — or offers to do it for you. It is not optional if you want the package as described.
+
+**Why this two-step exists**: the Claude Code plugin marketplace ships agents, commands, skills, and templates, but does not (as of today) have a mechanism for registering user-level hook scripts in `~/.claude/settings.json`. Every other package in the marketplace is persona-based and doesn't need hooks to function. This one does. Until the marketplace format grows hook support, Mode 2 requires the manual follow-up.
+
+### Mode 3: Ask another Claude to do it
+
+Open a fresh Claude Code session and paste the entire contents of `INSTALL_FOR_CLAUDE.md` into the prompt. That file is a ready-to-execute instruction set that walks Claude through the full install (Mode 1 equivalent) with safety checks and validation at every step.
 
 ## Using the workflow
 
@@ -161,7 +194,7 @@ If a session ends mid-build, `MAP.md` is still on disk with the in-progress task
 ```bash
 rm -rf ~/.claude/agents/{architect,bug-scanner,code-auditor,code-fixer,code-reviewer,debugger,dep-checker,dispatcher,doc-writer,explore-scout,explore-superscout,file-lister,fsm-executor,fsm-integrator,mock-server,mockup-verifier,research-scout,session-closer,session-handoff,spec-writer,task-planner,test-runner}.md
 rm ~/.claude/hooks/{block-map-writes,block-worker-reads,block-model-override,surface-map-on-start}.sh
-rm ~/.claude/commands/init-workflow.md
+rm ~/.claude/commands/init-workflow.md ~/.claude/commands/fsm-setup-hooks.md
 rm -rf ~/.claude/templates
 ```
 
