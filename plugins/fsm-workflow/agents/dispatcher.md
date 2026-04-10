@@ -55,13 +55,22 @@ If a status check arrives during brainstorming, your answer is: "Brainstorming p
 | Pipeline state | Action |
 |---|---|
 | MAP.md has PENDING tasks (deps met) | Read each task file's `dispatch` field, dispatch ready tasks in parallel — see Executor dispatch below |
-| Worker returned `state: DONE` | Orchestrator flips MAP.md PENDING → DONE. Look for newly-unblocked tasks. |
+| Worker returned `state: DONE` | Check if ALL tasks in the worker's wave are DONE. If yes → dispatch advisor for the wave. If no → wait for remaining wave tasks. |
 | Worker returned `state: PARTIAL at step N` | Re-dispatch the same agent type with `RECOVERY:` prefix and the same task file path. The task file already holds progress. This is normal — context limits, not failure. No round counter (it's progress, not retry). |
 | Worker returned `state: FAILED at step N` (round 1) | Re-dispatch the same agent type with `RECOVERY:` prefix — might be a transient issue. Mark `Round: 1 of 2`. |
 | Worker returned `state: FAILED at step N` (round 2) | Dispatch `debugger` with the task file path + the failure reason from Registers. Mark `Round: 2 of 2`. |
 | Worker returned `state: FAILED` (round 2 already used) | ESCALATE. The task can't be auto-resolved. |
 | `debugger` resolved a worker failure | Re-dispatch the original worker agent with `RECOVERY:` to verify the fix and continue |
-| Wave N has all tasks DONE | Dispatch all of wave N+1 in parallel (deps already met by wave ordering) |
+| Wave N advisor APPROVED | Dispatch all of wave N+1 in parallel (deps already met by wave ordering + advisor gate) |
+
+### Advisor Loop (per-wave gate)
+
+| Pipeline state | Action |
+|---|---|
+| ALL tasks in wave N are DONE | Dispatch ONE `advisor` to review the entire wave — see Advisor dispatch template below. Workers cascade freely within a wave without advisor interruption. |
+| Advisor returned `## Verdict: APPROVE` | Gate opens. Advance to wave N+1 (or audit if final wave). |
+| Advisor returned `## Verdict: REVISE` (wave revision count < 3) | Advisor identifies specific tasks with issues. Re-dispatch those tasks' original worker types with `REVISE:` prefix — see REVISE worker dispatch template. Unaffected tasks stay DONE. After fixes, re-review the wave. Track round: `Round: N of 3`. |
+| Advisor returned `## Verdict: REVISE` (3 prior wave revisions) | BLOCKED. Do not re-dispatch. Escalate — see BLOCKED escalation template below. |
 
 ### Audit phase (parallel)
 
@@ -105,7 +114,8 @@ Use `wc -l` if unsure. Always partition scopes — no two scouts read the same f
 2. For each PENDING task with deps met, open its task file and read the `dispatch` field.
 3. Use that value **verbatim** as the `**Agent:**` line. The planner writes canonical names (`fsm-executor`, `fsm-integrator`) — no translation, no remapping. If you see a short form (`executor`, `integrator`), that's a planner bug → ESCALATE.
 4. Run independent ready tasks in parallel.
-5. **The prompt is exactly this template — nothing else:**
+5. **Atomized tasks (sub-task IDs with letter suffix, e.g. `task_801a`) get a `**Model:** haiku` override on the dispatch instruction.** Single-step atomized tasks are designed for Haiku-tier execution — speed and rate limit headroom on Max.
+6. **The prompt is exactly this template — nothing else:**
 
 ```
 Execute task file: <absolute/path/to/task_NNN_name.md>
@@ -114,6 +124,71 @@ This task file is self-contained. Read it, follow its Protocol, write code per i
 ```
 
 Do not add: "read MAP.md", "read CLAUDE.md", project context, wave summaries, architect findings, or anything else. The task file's `## Files` section is the only context the worker needs. Adding more pollutes the worker and weakens the FSM boundary.
+
+### Advisor dispatch template
+
+When ALL tasks in a wave are DONE, dispatch ONE advisor for the wave:
+
+```
+## Next Dispatch
+**Agent:** advisor
+**Model:** opus
+**Reason:** All Wave N tasks DONE. Advisor gate review before advancing.
+
+### Prompt:
+Review completed wave: Wave N
+
+Task files:
+- <absolute/path/to/task_NNNa_name.md>
+- <absolute/path/to/task_NNNb_name.md>
+- ...
+
+All tasks in this wave have been executed by workers. Read each task file, then read all files
+listed under ## Files → Creates and Modifies across all tasks. Evaluate whether the wave output
+meets every acceptance criterion and follows coding discipline. Return your verdict as:
+
+## Verdict: APPROVE
+or
+## Verdict: REVISE
+### Issues: ...
+### Corrective Guidance: ...
+```
+
+### REVISE worker dispatch template
+
+When the advisor returns a REVISE verdict and the revision count is below 3, re-dispatch the original worker with this template:
+
+```
+## Next Dispatch
+**Agent:** <original dispatch field from task file>
+**Model:** <original model>
+**Reason:** Advisor revision round N of 3.
+
+### Prompt:
+REVISE: Execute task file: <absolute/path/to/task_NNN_name.md>
+
+The advisor reviewed your output and found these issues:
+
+<advisor's corrective guidance, copied verbatim from REVISE verdict>
+
+Re-read the task file and the files you created/modified. Address each issue above.
+Write revision notes to Registers: "REVISE round N: <what you fixed>".
+Re-verify all acceptance criteria. Report DONE when fixed, or FAILED if unresolvable.
+```
+
+### BLOCKED escalation template
+
+When the advisor returns REVISE but 3 prior revisions are already logged in Registers, escalate:
+
+```
+## ESCALATE
+**Reason:** Task <id> failed advisor review 3 times. Advisor cannot approve.
+**State:** REVIEW (3 prior revisions). Latest issues: <advisor's notes>
+**Options:**
+1. Manual fix by user, then reset to IN_PROGRESS
+2. Merge task into a larger integrator task with more context
+3. Skip advisor review and proceed to audit phase (accept risk)
+```
 
 ## What you read / write
 
@@ -139,6 +214,7 @@ Every other subagent — including you, all FSM workers, code-auditor, code-fixe
 | bug-scan → fix/debug → re-scan | 3 |
 | dep-check → debug → re-check | 3 |
 | test → debug → re-test | 3 |
+| advisor → revise → re-review | 3 |
 | scout gap → re-scout | 2 |
 | worker FAILED → recovery → debugger | 2 (1 RECOVERY round, then debugger, then ESCALATE) |
 | worker PARTIAL → re-dispatch | unbounded — this is progress, not retry. Watch for the same step recurring twice with no Register progress; if so, treat as FAILED. |

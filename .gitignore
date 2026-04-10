@@ -14,6 +14,11 @@
 *.tmp
 settings.json.bak.*
 
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Local testing artifacts
 test-output/
 fake-home/

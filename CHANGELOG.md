@@ -18,21 +18,57 @@ Sections within each release:
 
 ---
 
-## [Unreleased]
+## [1.1.0] — 2026-04-11
 
-Changes on `main` that have not yet been cut as a tagged release.
+Pipeline automation engine, per-wave advisor gate, enforcement hooks, and 315 tests.
+
+Repo: https://github.com/itsaldrincr/claude-code-fsm-workflow
+Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v1.1.0
 
 ### Added
 
-- None yet.
+- **`src/fsm_core/` — 10 Python modules** powering the automated dispatch pipeline:
+  - `action_decider.py` — pure-function 6-level priority cascade (BLOCKED → REVIEW → PENDING → ALL_DONE → WAITING → ERROR)
+  - `advisor_parser.py` — APPROVE/REVISE verdict parsing, revision round counting
+  - `subprocess_dispatch.py` — worker, advisor, and REVISE dispatch via `claude` CLI with model-tier routing
+  - `map_io.py` — atomic MAP.md status flips under lockfile with status validation
+  - `map_reader.py` — combines MAP.md statuses with task file frontmatter
+  - `map_lock.py` — atomic lockfile context manager with stale-lock reclaim
+  - `dag_waves.py` — DAG wave computation and cycle detection
+  - `session_state.py` — session state JSON projection
+  - `trace.py` — JSONL event trace appender
+  - `frontmatter.py` — shared task file frontmatter parser
+- **`scripts/orchestrate.py`** — step-function CLI for automated dispatch. Reads MAP.md, decides action, dispatches workers/advisor, updates state. Exit codes: 0=all done, 1=action taken, 2=waiting, 3=blocked, 4=error. Stateless between invocations.
+- **`scripts/atomize_task.py`** — mandatory task atomizer. Splits multi-step tasks into single-step sub-tasks with letter suffixes, chains dependencies, rewrites MAP.md. Rollback on failure restores parents and MAP.md.
+- **`hooks/validate_map_transition.py`** — PreToolUse hook on Edit targeting MAP.md. Blocks invalid state transitions (e.g. PENDING→DONE) using hardcoded `VALID_TRANSITIONS` dict. Emits deny with specific reason.
+- **`hooks/nudge_orchestrate.py`** — PostToolUse hook on Read of MAP.md. Nudges the orchestrator toward `scripts/orchestrate.py` when actionable tasks (PENDING/REVIEW) exist.
+- **315 tests** covering all modules: fsm_core (113), orchestrate (26), atomize (21), hook deny/allow logic (44), frontmatter (9), plus existing repo_map (48), usage_tracker (64).
 
 ### Changed
 
-- None yet.
+- **Advisor operates per-wave, not per-task.** Workers cascade freely within a wave (a→b→c chains complete without interruption). ONE advisor (Opus) reviews the entire wave output at the boundary. APPROVE opens the gate to wave N+1. REVISE targets specific tasks for re-dispatch (max 3 rounds, then BLOCKED).
+- **`advisor.md` agent** rewritten for wave-gate input (list of task files per wave, not single task).
+- **`dispatcher.md` agent** updated with per-wave advisor loop, wave completion detection, and wave-gate dispatch template.
+- **`install.sh`** extended to copy `src/fsm_core/`, pipeline-enforce hooks, and agent definitions. Now 9 hook registrations (6 repo-map + 1 fsm-trace + 2 pipeline-enforce).
+- **`CLAUDE.md` template** updated with per-wave advisor gate docs, orchestrate.py section, enforcement hooks section, `scripts/` inventory.
+- **`dispatch_revise`** now uses the task's original `dispatch_role` instead of hardcoding haiku. Integrator tasks get sonnet on REVISE.
 
 ### Fixed
 
-- None yet.
+- `dispatch_revise` return value was silently discarded — now captured; non-zero exit flips task to FAILED.
+- `_append_revise_entry` prepended instead of appended when Registers had existing entries.
+- `_map_replace_parent_entry` regex matched sub-task IDs (e.g. `task_801a` when targeting `task_801`) — added negative lookahead.
+- `_MapRewriteInput.parent_depends` used `# type: ignore` — fixed to `list[str] | None`.
+- `read_map_statuses` returned unrecognized status strings without warning — now validates against `VALID_STATUSES`.
+- `advisor_parser` empty stdout returned ambiguous guidance string — now returns `"empty response"`.
+- `nudge_orchestrate` used `Path.cwd()` instead of hook event's `cwd` field.
+- `atomize_tasks` had no rollback — now restores parent files, sub-task files, and MAP.md on failure.
+- `_run_advisor_cycle` didn't check advisor subprocess exit code — burned REVISE rounds on dispatch failures.
+- `_handle_revise` exceeded 20-line function limit — extracted `_flip_to_blocked` and `_run_revise_dispatch`.
+- `logging.basicConfig` called at module level in `atomize_task.py` — moved to `main()`.
+- `validate_map_transition` logged parse errors at DEBUG — changed to WARNING.
+- `_find_task_file` silently picked first of multiple glob matches — now logs warning.
+- File Directory regex lookahead failed on double-newline section boundaries — changed to `\n+`.
 
 ---
 
@@ -102,6 +138,6 @@ Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0
 
 ---
 
-[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v0.1.1...HEAD
+[1.1.0]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v0.1.1...v1.1.0
 [0.1.1]: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.1
 [0.1.0]: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.0
