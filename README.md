@@ -1,6 +1,16 @@
 # FSM Workflow for Claude Code
 
-**Discipline enforced by hooks. Dispatch automated by code.** A multi-agent pipeline for Claude Code where 22 subagents operate under strict role separation, context isolation, and nonce-proof reads — with an automated dispatch engine that reads state, decides actions, dispatches workers, gates waves through Opus-tier review, and audits the output. Brainstorm → spec → architect → plan → atomize → execute → advisor gate → audit → test → close.
+**Discipline enforced by hooks. Dispatch automated by code. Audits run as scripts, not agents.** A multi-agent pipeline for Claude Code where 23 subagents operate under strict role separation, context isolation, and nonce-proof reads — with an automated dispatch engine that reads state, decides actions, dispatches workers, gates waves through Opus-tier review, and audits the output via deterministic AST checks. Brainstorm → spec → architect → plan → atomize → execute → advisor gate → audit (scripts) → test → close.
+
+## What's new in v1.1.1
+
+- **Deterministic audit scripts replace 2 of the 3 LLM auditors** — `scripts/audit_discipline.py` (AST-based coding discipline checker, replaces `code-auditor`) and `scripts/check_deps.py` (import resolution + unused-import checker, replaces `dep-checker`). Each runs in ~1 second against the full codebase with zero token cost. Exit 0 clean / 1 violations / 2 error. Output: `file:line:scope -- rule -- detail`, sorted by (file, line) for determinism. `bug-scanner` stays as an LLM subagent because logic-bug detection still needs reasoning.
+- **`scripts/session_close.py`** — test-gated session cleanup. Runs pytest; on pass, deletes `task_*.md`, deletes `.audit_clean` sentinel, resets MAP.md to clean template. On failure, no cleanup.
+- **Post-ALL_DONE audit gate in `scripts/orchestrate.py`** — subprocess calls to audit scripts with `PYTHONPATH` propagation, 600s timeouts, `stderr` capture, dry-run short-circuit, lockfile-guarded `.audit_clean` sentinel to prevent concurrent-orchestrator races. New `EXIT_AUDIT_FAILED = 5` and `AuditGateResult` dataclass. Failing `session_close.py` now maps to `EXIT_ERROR` instead of silently returning success.
+- **Installer fixes (critical)** — `install.sh` now actually installs the 4 top-level enforcement hooks (`block-map-writes.sh`, `block-worker-reads.sh`, `block-model-override.sh`, `surface-map-on-start.sh`). These shipped in `hooks/` since v0.1.0 but were never copied or registered — fresh marketplace users got zero moat despite the docs. Also fixed: missing `src/repo_map/` source tree, missing `hooks/post_tool_trace.sh`, broken agent path after the v1.1.0 plugin restructure.
+- **Version drift repaired** — `plugin.json` and `marketplace.json` were stuck at `0.1.1` through v1.0.0 and v1.1.0. Both now match the tag scheme at `1.1.1`.
+- **Atomizer bug fix** — `scripts/atomize_task.py` now correctly rewrites cross-parent dependencies during multi-task atomization. Previously, atomizing `task_804` with `depends: [task_801, task_802, task_803]` left subtask files pointing to deleted parent IDs instead of each parent's last subtask (`task_801c`, `task_802c`, `task_803c`).
+- **101 new tests** across `test_audit_discipline.py`, `test_check_deps.py`, `test_session_close.py`, plus new `TestAuditGate*` classes in `test_orchestrate.py`. Full suite: 315 tests.
 
 ## What's new in v1.1.0
 
@@ -38,7 +48,8 @@ Most multi-agent packages give you "Senior Developer", "UI Expert", "QA Engineer
 | Automated dispatch engine | **yes** | no | no | no | no |
 | Per-wave advisor gate | **yes** | no | no | no | no |
 | State transition validation hook | **yes** | no | no | no | no |
-| Agent count / breadth | 22 | **182** | 24 | 19 | 2 |
+| Agent count / breadth | 23 | **182** | 24 | 19 | 2 |
+| Deterministic audit scripts (not LLM) | **yes** | no | no | no | no |
 | Plugin marketplace / skills | no | **yes** | partial | partial | no |
 | Multi-runtime support | no | no | **yes** | partial | no |
 | Live observability dashboard | no | no | no | partial | **yes** |
@@ -47,14 +58,15 @@ Most multi-agent packages give you "Senior Developer", "UI Expert", "QA Engineer
 
 ```
 fsm-workflow/
-├── install.sh                          # idempotent full installer
+├── install.sh                          # idempotent full installer (13 hooks + agents + fsm_core)
 ├── hooks/                              # user-level enforcement hooks
 │   ├── block-map-writes.sh             # only task-planner + session-closer may write MAP.md
 │   ├── block-worker-reads.sh           # workers can't read MAP.md / CLAUDE.md
 │   ├── block-model-override.sh         # stops callers from forcing weaker models
 │   ├── surface-map-on-start.sh         # SessionStart: MAP.md status summary for recovery
 │   ├── validate_map_transition.py      # blocks invalid state transitions (e.g. PENDING→DONE)
-│   └── nudge_orchestrate.py            # nudges toward scripts/orchestrate.py when tasks exist
+│   ├── nudge_orchestrate.py            # nudges toward scripts/orchestrate.py when tasks exist
+│   └── post_tool_trace.sh              # JSONL event trace of every tool call for FSM runs
 ├── src/fsm_core/                       # pipeline automation modules (Python, stdlib only)
 │   ├── action_decider.py               # 6-level priority cascade
 │   ├── advisor_parser.py               # APPROVE/REVISE verdict parsing
@@ -66,12 +78,20 @@ fsm-workflow/
 │   ├── frontmatter.py                  # task file YAML frontmatter parser
 │   ├── session_state.py                # session state JSON projection
 │   └── trace.py                        # JSONL event trace appender
+├── src/repo_map/                       # repo-map indexing (Python + JS)
+│   ├── indexer.py / indexer_js.py      # AST symbol + import extraction
+│   ├── models.py                       # FileIndex, Symbol, IndexRequest dataclasses
+│   ├── store.py                        # persistent index storage
+│   └── hooks/                          # PreToolUse/PostToolUse/SessionStart hooks for fresh indexes
 ├── scripts/                            # CLI tools
 │   ├── orchestrate.py                  # automated dispatch loop (one action per invocation)
-│   └── atomize_task.py                 # splits multi-step tasks into single-step sub-tasks
-├── tests/                              # 203 tests (stdlib only, no deps)
+│   ├── atomize_task.py                 # splits multi-step tasks into single-step sub-tasks
+│   ├── audit_discipline.py             # AST discipline checker — replaces code-auditor LLM
+│   ├── check_deps.py                   # import resolution + unused-import checker — replaces dep-checker LLM
+│   └── session_close.py                # test-gated cleanup — replaces session-closer LLM
+├── tests/                              # 315 tests (stdlib only, no deps)
 ├── plugins/fsm-workflow/               # Claude Code plugin marketplace structure
-│   ├── agents/                         # 22 subagent definitions
+│   ├── agents/                         # 23 subagent definitions
 │   ├── commands/                       # /init-workflow, /fsm-setup-hooks
 │   └── templates/                      # CLAUDE.md, settings.json, discipline-gate.sh
 ├── CHANGELOG.md
