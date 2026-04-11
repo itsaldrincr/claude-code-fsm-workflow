@@ -2,9 +2,15 @@
 description: Install the FSM workflow enforcement hooks. Required after marketplace install for the full package — without these hooks the workflow loses context isolation, single-writer state, nonce-proof reads, and the discipline gate.
 ---
 
-The user just ran `/plugin install fsm-workflow` from the Claude Code plugin marketplace and is invoking this command to complete the install. The plugin marketplace ships agents, commands, and templates — but **not** hooks. The hooks are the entire moat of this package. Without them, it's 22 persona agents with no teeth.
+The user just ran `/plugin install fsm-workflow` from the Claude Code plugin marketplace and is invoking this command to complete the install. The plugin marketplace ships agents, commands, and templates — but **not** hooks. The hooks are the entire moat of this package. Without them, it's 23 persona agents with no teeth.
 
-Your job is to get the four user-level hooks into `~/.claude/hooks/` and registered in `~/.claude/settings.json`. The package ships an idempotent `install.sh` that does exactly this — your job is to run it (with the user's permission) or walk them through running it themselves.
+Your job is to get the full hook suite into `~/.claude/hooks/` and registered in `~/.claude/settings.json`. The package ships an idempotent `install.sh` that does exactly this — your job is to run it (with the user's permission) or walk them through running it themselves.
+
+The installer lands 13 hook files across 4 categories:
+- **Top-level enforcement (4):** `block-map-writes.sh`, `block-worker-reads.sh`, `block-model-override.sh`, `surface-map-on-start.sh`
+- **Pipeline-enforce (2):** `pipeline-enforce/validate_map_transition.py`, `pipeline-enforce/nudge_orchestrate.py`
+- **Repo-map (6):** `repo-map/src/repo_map/hooks/{pre_read,post_read,post_grep,post_edit,session_start,stop}.py`
+- **FSM trace (1):** `fsm-trace/post_tool_trace.sh`
 
 ## Step 1 — check if hooks are already installed
 
@@ -14,27 +20,34 @@ Run:
 ls ~/.claude/hooks/block-map-writes.sh \
    ~/.claude/hooks/block-worker-reads.sh \
    ~/.claude/hooks/block-model-override.sh \
-   ~/.claude/hooks/surface-map-on-start.sh 2>&1
+   ~/.claude/hooks/surface-map-on-start.sh \
+   ~/.claude/hooks/pipeline-enforce/validate_map_transition.py \
+   ~/.claude/hooks/pipeline-enforce/nudge_orchestrate.py \
+   ~/.claude/hooks/fsm-trace/post_tool_trace.sh 2>&1
 ```
 
 Also check they're registered in settings.json:
 
 ```bash
-jq '.hooks.PreToolUse, .hooks.SessionStart' ~/.claude/settings.json
+jq '.hooks.PreToolUse, .hooks.PostToolUse, .hooks.SessionStart' ~/.claude/settings.json
 ```
 
-If all four files exist AND the settings.json hook arrays reference them → report "enforcement is already active, no action needed" and stop. Do not re-install.
+If every file listed above exists AND the settings.json hook arrays reference them → report "enforcement is already active, no action needed" and stop. Do not re-install.
 
 ## Step 2 — explain why this extra step exists
 
 If the hooks are missing, explain plainly:
 
-> The Claude Code plugin marketplace installs agents, commands, and templates — but not hooks. This package's entire value proposition is mechanical enforcement via 4 user-level hooks that physically prevent:
+> The Claude Code plugin marketplace installs agents, commands, and templates — but not hooks. This package's entire value proposition is mechanical enforcement via 13 user-level hooks across 4 categories that physically prevent:
 >
-> - Workers from reading `MAP.md` or `CLAUDE.md` (context isolation)
-> - Unauthorized agents from writing `MAP.md` (single-writer state)
-> - Agents from overriding each other's model assignments (model lock)
-> - Sessions from resuming blind without a status summary (recovery awareness)
+> - Workers from reading `MAP.md` or `CLAUDE.md` (context isolation — `block-worker-reads.sh`)
+> - Unauthorized agents from writing `MAP.md` (single-writer state — `block-map-writes.sh`)
+> - Agents from overriding each other's model assignments (model lock — `block-model-override.sh`)
+> - Sessions from resuming blind without a status summary (recovery awareness — `surface-map-on-start.sh`)
+> - Invalid MAP.md state transitions, e.g. PENDING → DONE without IN_PROGRESS (`pipeline-enforce/validate_map_transition.py`)
+> - Orchestrator skipping `scripts/orchestrate.py` (`pipeline-enforce/nudge_orchestrate.py`)
+> - Stale repo-map indexes across reads, edits, greps, and session boundaries (`repo-map/*.py`)
+> - Untraced tool calls during FSM pipeline runs (`fsm-trace/post_tool_trace.sh`)
 >
 > Every competing multi-agent package the author surveyed relies on prompt instructions for these properties — none return `permissionDecision: deny` from hooks on anything more substantial than `rm -rf`. This is the moat. Without the hooks, you have the agents but not the enforcement, and the workflow will drift like everyone else's.
 
@@ -69,10 +82,13 @@ After Path A or B runs, verify the install landed:
 
 ```bash
 ls ~/.claude/hooks/{block-map-writes,block-worker-reads,block-model-override,surface-map-on-start}.sh
-jq '.hooks.PreToolUse | length, .hooks.SessionStart | length' ~/.claude/settings.json
+ls ~/.claude/hooks/pipeline-enforce/{validate_map_transition,nudge_orchestrate}.py
+ls ~/.claude/hooks/fsm-trace/post_tool_trace.sh
+ls ~/.claude/hooks/repo-map/src/repo_map/hooks/
+jq '.hooks.PreToolUse | length, .hooks.PostToolUse | length, .hooks.SessionStart | length' ~/.claude/settings.json
 ```
 
-Expected: all four `.sh` files listed, `PreToolUse` length ≥ 3, `SessionStart` length ≥ 1. Report the numbers to the user.
+Expected: all 4 top-level `.sh` files + 2 `pipeline-enforce/*.py` + `fsm-trace/post_tool_trace.sh` + 6 `repo-map/**/*.py`. Hook array lengths: `PreToolUse` ≥ 4, `PostToolUse` ≥ 4, `SessionStart` ≥ 1. Report the numbers to the user.
 
 ## Step 5 — remind the user to restart
 

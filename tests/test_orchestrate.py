@@ -9,9 +9,12 @@ import pytest
 from scripts.orchestrate import (
     EXIT_ACTION_TAKEN,
     EXIT_ALL_DONE,
+    EXIT_AUDIT_FAILED,
     EXIT_BLOCKED,
     EXIT_ERROR,
     EXIT_WAITING,
+    AuditGateResult,
+    CycleContext,
     OrchestrateConfig,
     _handle_all_done,
     _handle_escalate,
@@ -124,15 +127,33 @@ def _make_config(workspace: Path, is_dry_run: bool = False) -> OrchestrateConfig
 
 # ---- Unit tests for pure handlers ----
 
+def _make_all_done_ctx(tmp_path: Path) -> CycleContext:
+    """Build a minimal CycleContext pointing at tmp_path."""
+    config = OrchestrateConfig(workspace=tmp_path, is_dry_run=False)
+    return CycleContext(config=config, map_path=tmp_path / "MAP.md", task_lookup={})
+
+
 class TestHandleAllDone:
-    def test_returns_exit_all_done(self) -> None:
-        """_handle_all_done returns exit code 0."""
-        result = _handle_all_done()
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_returns_exit_all_done(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """_handle_all_done returns exit code 0 when audit passes."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = True
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
         assert result.exit_code == EXIT_ALL_DONE
 
-    def test_returns_empty_output(self) -> None:
-        """_handle_all_done returns empty output dict."""
-        result = _handle_all_done()
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_returns_empty_output(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """_handle_all_done returns empty output dict when audit passes."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = True
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
         assert result.output == {}
 
 
@@ -181,8 +202,14 @@ class TestRunCycleMissingMap:
 
 
 class TestRunCycleAllDone:
-    def test_all_done_returns_exit_zero(self, tmp_path: Path) -> None:
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_all_done_returns_exit_zero(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
         """All DONE tasks returns EXIT_ALL_DONE."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = True
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_ALL_DONE))
         config = _make_config(fx.workspace)
         result = _run_cycle(config)
@@ -384,3 +411,126 @@ class TestJsonOutput:
         assert "action" in result.output
         assert "tasks" in result.output
         assert "detail" in result.output
+
+
+class TestAuditGateClean:
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_clean_audit_returns_exit_all_done(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Clean audit writes sentinel, calls session_close, returns EXIT_ALL_DONE."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = True
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
+        assert result.exit_code == EXIT_ALL_DONE
+
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_clean_audit_writes_sentinel(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Clean audit creates .audit_clean sentinel file."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = True
+        _handle_all_done(_make_all_done_ctx(tmp_path))
+        assert (tmp_path / ".audit_clean").exists()
+
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_clean_audit_calls_session_close(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Clean audit triggers session_close exactly once."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = True
+        _handle_all_done(_make_all_done_ctx(tmp_path))
+        mock_close.assert_called_once()
+
+
+class TestAuditGateFailed:
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_failed_audit_returns_exit_audit_failed(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Failed audit returns EXIT_AUDIT_FAILED without calling session_close."""
+        mock_audit.return_value = AuditGateResult(is_clean=False, detail="audit_discipline failed: F1 violation")
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
+        assert result.exit_code == EXIT_AUDIT_FAILED
+
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_failed_audit_output_has_detail(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Failed audit output carries audit_failed action and detail."""
+        detail = "audit_discipline failed: F1 violation"
+        mock_audit.return_value = AuditGateResult(is_clean=False, detail=detail)
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
+        assert result.output["action"] == "audit_failed"
+        assert detail in result.output["detail"]
+
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_failed_audit_does_not_call_session_close(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Failed audit never calls session_close."""
+        mock_audit.return_value = AuditGateResult(is_clean=False, detail="check_deps failed: broken import")
+        _handle_all_done(_make_all_done_ctx(tmp_path))
+        mock_close.assert_not_called()
+
+
+class TestAuditGateSentinel:
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_sentinel_skips_audit(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Pre-existing sentinel skips audit scripts entirely."""
+        (tmp_path / ".audit_clean").touch()
+        _handle_all_done(_make_all_done_ctx(tmp_path))
+        mock_audit.assert_not_called()
+
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_sentinel_still_calls_session_close(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Pre-existing sentinel still triggers session_close."""
+        mock_close.return_value = True
+        (tmp_path / ".audit_clean").touch()
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
+        mock_close.assert_called_once()
+        assert result.exit_code == EXIT_ALL_DONE
+
+
+class TestAuditGateDryRun:
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_dry_run_all_done_skips_audit(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """dry-run mode: all DONE pipeline does not invoke audit scripts or session_close."""
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_ALL_DONE))
+        config = _make_config(fx.workspace, is_dry_run=True)
+        result = _run_cycle(config)
+        assert result.exit_code == EXIT_ALL_DONE
+        mock_audit.assert_not_called()
+        mock_close.assert_not_called()
+        assert not (tmp_path / ".audit_clean").exists()
+
+
+class TestAuditGateSessionCloseFailure:
+    @patch("scripts.orchestrate._run_audit_scripts")
+    @patch("scripts.orchestrate._run_session_close")
+    def test_failing_session_close_yields_exit_error(
+        self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
+    ) -> None:
+        """Failing session_close returns EXIT_ERROR even when audit passes."""
+        mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
+        mock_close.return_value = False
+        result = _handle_all_done(_make_all_done_ctx(tmp_path))
+        assert result.exit_code == EXIT_ERROR
+        assert result.output["detail"] == "session_close failed"

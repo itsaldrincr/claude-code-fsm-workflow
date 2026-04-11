@@ -26,6 +26,13 @@ readonly TRACE_HOOK_TARGET_DIR="$HOME/.claude/hooks/fsm-trace"
 readonly FSM_CORE_SOURCE_DIR="$SOURCE_DIR/src/fsm_core"
 readonly FSM_CORE_TARGET_DIR="$HOME/.claude/hooks/fsm-trace/fsm_core"
 
+readonly ENFORCEMENT_HOOK_SOURCE_DIR="$SOURCE_DIR/hooks"
+readonly ENFORCEMENT_HOOK_TARGET_DIR="$HOME/.claude/hooks"
+readonly HOOK_BLOCK_MAP_WRITES="block-map-writes.sh"
+readonly HOOK_BLOCK_WORKER_READS="block-worker-reads.sh"
+readonly HOOK_BLOCK_MODEL_OVERRIDE="block-model-override.sh"
+readonly HOOK_SURFACE_MAP_ON_START="surface-map-on-start.sh"
+
 # ── preflight ──────────────────────────────────────────────────────────────────
 if ! command -v jq >/dev/null 2>&1; then
     echo "ERROR: jq is required but not installed. Install via 'brew install jq' or your package manager." >&2
@@ -62,8 +69,23 @@ cp "$PIPELINE_ENFORCE_SOURCE_DIR/nudge_orchestrate.py" "$PIPELINE_ENFORCE_TARGET
 chmod +x "$PIPELINE_ENFORCE_TARGET_DIR/validate_map_transition.py"
 chmod +x "$PIPELINE_ENFORCE_TARGET_DIR/nudge_orchestrate.py"
 
+# ── copy top-level enforcement hooks (block-*/surface-*) ──────────────────────
+# These are the four hooks the plugin-marketplace README and /fsm-setup-hooks
+# command advertise as the moat. They live at $HOME/.claude/hooks/ (top level),
+# not in a subdirectory, so they can be referenced directly in settings.json.
+mkdir -p "$ENFORCEMENT_HOOK_TARGET_DIR"
+for hook in "$HOOK_BLOCK_MAP_WRITES" "$HOOK_BLOCK_WORKER_READS" "$HOOK_BLOCK_MODEL_OVERRIDE" "$HOOK_SURFACE_MAP_ON_START"; do
+    cp "$ENFORCEMENT_HOOK_SOURCE_DIR/$hook" "$ENFORCEMENT_HOOK_TARGET_DIR/"
+    chmod +x "$ENFORCEMENT_HOOK_TARGET_DIR/$hook"
+done
+
 # ── copy agent definitions ─────────────────────────────────────────────────────
-AGENTS_SOURCE_DIR="$SOURCE_DIR/agents"
+# Agents live under plugins/fsm-workflow/agents/ (the Claude Code plugin layout).
+# Fall back to top-level agents/ for older repo layouts.
+AGENTS_SOURCE_DIR="$SOURCE_DIR/plugins/fsm-workflow/agents"
+if [ ! -d "$AGENTS_SOURCE_DIR" ] && [ -d "$SOURCE_DIR/agents" ]; then
+    AGENTS_SOURCE_DIR="$SOURCE_DIR/agents"
+fi
 AGENTS_TARGET_DIR="$HOME/.claude/agents"
 if [ -d "$AGENTS_SOURCE_DIR" ]; then
     mkdir -p "$AGENTS_TARGET_DIR"
@@ -140,6 +162,12 @@ _merge_hook_entry "PostToolUse"  ""                      "$TRACE_HOOK_TARGET_DIR
 _merge_hook_entry "PreToolUse"   "Edit"                  "$PIPELINE_ENFORCE_TARGET_DIR/validate_map_transition.py"
 _merge_hook_entry "PostToolUse"  "Read"                  "$PIPELINE_ENFORCE_TARGET_DIR/nudge_orchestrate.py"
 
+# ── merge top-level enforcement hook entries ──────────────────────────────────
+_merge_hook_entry "PreToolUse"   "Write|Edit|MultiEdit"  "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_BLOCK_MAP_WRITES"
+_merge_hook_entry "PreToolUse"   "Read"                  "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_BLOCK_WORKER_READS"
+_merge_hook_entry "PreToolUse"   "Agent"                 "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_BLOCK_MODEL_OVERRIDE"
+_merge_hook_entry "SessionStart" ""                      "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_SURFACE_MAP_ON_START"
+
 # ── summary ────────────────────────────────────────────────────────────────────
 echo "repo-map installer summary:"
 echo "  source:    $SOURCE_DIR/src/repo_map/"
@@ -151,3 +179,4 @@ echo "  skipped:   $skipped_count (already present)"
 echo "  fsm-trace target: $TRACE_HOOK_TARGET_DIR/"
 echo "  fsm_core target:  $FSM_CORE_TARGET_DIR/"
 echo "  agents target:    $AGENTS_TARGET_DIR/"
+echo "  enforcement:      $ENFORCEMENT_HOOK_TARGET_DIR/{block-*,surface-*}.sh"

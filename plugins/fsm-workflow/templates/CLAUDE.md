@@ -107,9 +107,9 @@ This workspace runs a multi-agent pipeline. Roles never overlap.
 - `advisor` — post-execution reviewer; returns APPROVE or REVISE verdict (Opus-tier)
 
 **Auditors** (parallel, post-execution):
-- `code-auditor` — discipline violations
-- `bug-scanner` — logic bugs
-- `dep-checker` — broken imports
+- `audit_discipline.py` — discipline violations (deterministic AST; replaces `code-auditor` LLM)
+- `bug-scanner` — logic bugs (LLM; reasoning-required)
+- `check_deps.py` — broken/unused imports (deterministic `importlib`; replaces `dep-checker` LLM)
 
 **Specialists**:
 - `code-fixer` — mechanical discipline + simple-bug fixes
@@ -283,7 +283,7 @@ If no `CLAUDE.md` exists, dispatcher routes to `doc-writer` (pre-workflow mode).
 4. **Atomizer** — orchestrator runs `python scripts/atomize_task.py <task_files...>` on every multi-step task. Mandatory. Splits into single-step sub-tasks for Haiku-tier execution.
 5. **Workers** — `fsm-executor` / `fsm-integrator` in waves (parallel within a wave). Sub-task chains (a→b→c) cascade freely within a wave without interruption. Orchestrator flips PENDING → IN_PROGRESS per worker dispatch.
 6. **Wave gate (advisor)** — when ALL tasks in a wave reach DONE (worker self-verified), ONE advisor (Opus) reviews the entire wave output. The advisor reads all files created/modified across all wave tasks. APPROVE → gate opens, wave N+1 starts. REVISE → targeted tasks re-dispatched, wave re-reviewed (max 3 rounds). After 3 failed rounds → BLOCKED → escalate. Wave N+1 starts only after the wave-level advisor approves.
-7. **Audit** — `code-auditor` + `bug-scanner` + `dep-checker` in parallel
+7. **Audit** — `audit_discipline.py` + `check_deps.py` run deterministically via subprocess (no LLM calls); `bug-scanner` LLM runs in parallel for logic checks. `orchestrate.py` gates on the `.audit_clean` sentinel file before proceeding.
 8. **Fix loops** — `code-fixer` (discipline + simple bugs) or `debugger` (test failures, complex bugs, broken imports). Max 3 rounds per loop, then ESCALATE.
 9. **test-runner** — when all auditors clean
 10. **session-closer** — when tests pass. Resets MAP.md, deletes task files.

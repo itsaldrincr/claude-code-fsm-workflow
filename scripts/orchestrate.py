@@ -3,6 +3,8 @@
 import argparse
 import json
 import logging
+import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +28,7 @@ from src.fsm_core.advisor_parser import (
     parse_advisor_output,
 )
 from src.fsm_core.map_io import StatusUpdateRequest, update_map_status
-from src.fsm_core.map_lock import LockTimeoutError
+from src.fsm_core.map_lock import LockTimeoutError, map_lock
 from src.fsm_core.map_reader import ReadTasksRequest, TaskInfo, read_task_dispatch_info
 from src.fsm_core.subprocess_dispatch import (
     AdvisorDispatchRequest,
@@ -44,10 +46,19 @@ EXIT_ACTION_TAKEN: int = 1
 EXIT_WAITING: int = 2
 EXIT_BLOCKED: int = 3
 EXIT_ERROR: int = 4
+EXIT_AUDIT_FAILED: int = 5
 
+AUDIT_SENTINEL: str = ".audit_clean"
 REGISTERS_SECTION: str = "## Registers"
 NONCE_PLACEHOLDER: str = "000000"
 GUIDANCE_SUMMARY_LIMIT: int = 100
+AUDIT_DISCIPLINE_SCRIPT: str = "scripts/audit_discipline.py"
+CHECK_DEPS_SCRIPT: str = "scripts/check_deps.py"
+SESSION_CLOSE_SCRIPT: str = "scripts/session_close.py"
+AUDIT_SRC_DIR: str = "src"
+AUDIT_SCRIPTS_DIR: str = "scripts"
+PYTHON_EXECUTABLE: str = sys.executable
+SUBPROCESS_TIMEOUT_SECONDS: int = 600
 
 
 @dataclass
@@ -82,6 +93,22 @@ class ReviseContext:
     task_id: str
     info: TaskInfo
     guidance: str
+
+
+@dataclass(frozen=True)
+class AuditGateResult:
+    """Result of running audit scripts as a gate."""
+
+    is_clean: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class AuditScriptRequest:
+    """Parameters for running a single audit script subprocess."""
+
+    cmd: list[str]
+    env: dict[str, str]
 
 
 def main() -> int:
@@ -151,7 +178,7 @@ def _dispatch_action(action: Action, ctx: CycleContext) -> ActionResult:
     if action.kind == DISPATCH_WAVE:
         return _handle_dispatch_wave(action, ctx)
     if action.kind == ALL_DONE:
-        return _handle_all_done()
+        return _handle_all_done(ctx)
     if action.kind == WAITING:
         return _handle_waiting()
     return ActionResult(EXIT_ERROR, {"action": "error", "tasks": [], "detail": f"Unknown action: {action.kind}"})
@@ -164,8 +191,100 @@ def _handle_escalate(action: Action) -> ActionResult:
     return ActionResult(EXIT_BLOCKED, output)
 
 
-def _handle_all_done() -> ActionResult:
-    """Return success exit when all tasks are DONE."""
+def _has_audit_sentinel(workspace: Path) -> bool:
+    """Return True if the audit sentinel file exists in workspace."""
+    return (workspace / AUDIT_SENTINEL).exists()
+
+
+def _decode_result_output(result: subprocess.CompletedProcess) -> str:
+    """Return non-empty stdout or stderr from a completed subprocess."""
+    stdout = result.stdout.decode(errors="replace").strip()
+    stderr = result.stderr.decode(errors="replace").strip()
+    return stdout or stderr or "(no output)"
+
+
+def _run_one_audit_script(request: AuditScriptRequest, workspace: Path) -> AuditGateResult | None:
+    """Run a single audit script; return AuditGateResult on failure, None on success."""
+    script_name = request.cmd[1] if len(request.cmd) > 1 else "audit script"
+    try:
+        result = subprocess.run(
+            request.cmd, cwd=workspace, capture_output=True,
+            env=request.env, timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return AuditGateResult(is_clean=False, detail=f"{script_name} timed out")
+    if result.returncode != 0:
+        detail_text = _decode_result_output(result)
+        return AuditGateResult(is_clean=False, detail=f"{script_name} failed: {detail_text}")
+    return None
+
+
+def _run_audit_scripts(workspace: Path) -> AuditGateResult:
+    """Run audit_discipline.py and check_deps.py; return AuditGateResult."""
+    env = {**os.environ, "PYTHONPATH": str(workspace)}
+    discipline_req = AuditScriptRequest(
+        cmd=[PYTHON_EXECUTABLE, AUDIT_DISCIPLINE_SCRIPT, AUDIT_SRC_DIR, AUDIT_SCRIPTS_DIR],
+        env=env,
+    )
+    failure = _run_one_audit_script(discipline_req, workspace)
+    if failure is not None:
+        return failure
+    deps_req = AuditScriptRequest(
+        cmd=[PYTHON_EXECUTABLE, CHECK_DEPS_SCRIPT, AUDIT_SRC_DIR, AUDIT_SCRIPTS_DIR],
+        env=env,
+    )
+    failure = _run_one_audit_script(deps_req, workspace)
+    if failure is not None:
+        return failure
+    return AuditGateResult(is_clean=True, detail="audit clean")
+
+
+def _write_audit_sentinel(workspace: Path) -> None:
+    """Create the .audit_clean sentinel file in workspace."""
+    (workspace / AUDIT_SENTINEL).touch()
+
+
+def _run_session_close(workspace: Path) -> bool:
+    """Run session_close.py via subprocess. Returns True on success."""
+    try:
+        result = subprocess.run(
+            [PYTHON_EXECUTABLE, SESSION_CLOSE_SCRIPT, "--workspace", str(workspace)],
+            cwd=workspace,
+            capture_output=False,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("session_close.py timed out")
+        return False
+    if result.returncode != 0:
+        logger.error("session_close.py exited %d", result.returncode)
+        return False
+    return True
+
+
+def _run_audit_if_needed(workspace: Path) -> AuditGateResult | None:
+    """Check sentinel under lock; run audit and write sentinel if absent. Returns None if already clean."""
+    with map_lock(workspace / "MAP.md"):
+        if _has_audit_sentinel(workspace):
+            return None
+        audit_result = _run_audit_scripts(workspace)
+        if audit_result.is_clean:
+            _write_audit_sentinel(workspace)
+        return audit_result
+
+
+def _handle_all_done(ctx: CycleContext) -> ActionResult:
+    """Run audit gate then session close when all tasks are DONE."""
+    if ctx.config.is_dry_run:
+        logger.info("DRY-RUN: would run audit gate and session_close")
+        return ActionResult(EXIT_ALL_DONE, {})
+    workspace = ctx.config.workspace
+    audit_result = _run_audit_if_needed(workspace)
+    if audit_result is not None and not audit_result.is_clean:
+        logger.error("Audit gate failed: %s", audit_result.detail)
+        return ActionResult(EXIT_AUDIT_FAILED, {"action": "audit_failed", "tasks": [], "detail": audit_result.detail})
+    if not _run_session_close(workspace):
+        return ActionResult(EXIT_ERROR, {"action": "error", "tasks": [], "detail": "session_close failed"})
     return ActionResult(EXIT_ALL_DONE, {})
 
 

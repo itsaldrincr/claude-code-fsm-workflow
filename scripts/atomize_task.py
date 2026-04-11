@@ -78,6 +78,14 @@ class DepReplacement:
 
 
 @dataclass
+class DependsReplacement:
+    """Old and new depends lists for replacing frontmatter depends line."""
+
+    old: list[str]
+    new: list[str]
+
+
+@dataclass
 class ParsedTask:
     """Parsed components of a task file."""
 
@@ -427,6 +435,29 @@ def _extract_task_id(task_path: str) -> str:
     return name
 
 
+def _replace_depends_in_content(content: str, replacement: DependsReplacement) -> str:
+    """Replace the depends: line in frontmatter with a new list."""
+    old_line = f"depends: [{', '.join(replacement.old)}]"
+    new_line = f"depends: [{', '.join(replacement.new)}]"
+    return content.replace(old_line, new_line, 1)
+
+
+def _rewrite_parent_depends(task_path: str, rewrites: dict[str, str]) -> None:
+    """Update parent task file depends using accumulated parent→last rewrites."""
+    if not rewrites:
+        return
+    path = Path(task_path)
+    content = path.read_text(encoding="utf-8")
+    fm = parse_frontmatter(content)
+    if not fm.depends:
+        return
+    new_depends = [rewrites.get(d, d) for d in fm.depends]
+    if new_depends == fm.depends:
+        return
+    replacement = DependsReplacement(old=fm.depends, new=new_depends)
+    path.write_text(_replace_depends_in_content(content, replacement), encoding="utf-8")
+
+
 def _build_subtask_depends_map(parent_id: str, subtask_ids: list[str]) -> dict[str, list[str]]:
     """Build a map of sub-task ID to its depends list."""
     result: dict[str, list[str]] = {}
@@ -485,14 +516,17 @@ def atomize_tasks(request: AtomizeRequest) -> None:
     map_path = Path(request.map_path)
     original_map = map_path.read_text(encoding="utf-8") if map_path.exists() else None
     rollback = _RollbackState(created_files=[], parent_backups={}, map_path=map_path, original_map=original_map)
+    rewrites: dict[str, str] = {}
     try:
         for task_path in request.task_paths:
             parent_id = _extract_task_id(task_path)
-            parsed = _parse_task_file(Path(task_path))
             rollback.parent_backups[task_path] = Path(task_path).read_text(encoding="utf-8")
+            _rewrite_parent_depends(task_path, rewrites)
+            parsed = _parse_task_file(Path(task_path))
             created = atomize_task(task_path)
             rollback.created_files.extend(created)
             if created:
+                rewrites[parent_id] = _extract_task_id(created[-1])
                 _rewrite_map_for_parent(_MapRewriteInput(parent_id, created, request, parsed.sections, parsed.frontmatter.depends))
     except Exception:
         _rollback_atomization(rollback)

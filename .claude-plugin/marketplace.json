@@ -5,15 +5,15 @@
     "url": "https://github.com/itsaldrincr"
   },
   "metadata": {
-    "description": "Multi-agent workflow for Claude Code where discipline is enforced by hooks, not personas. 22 subagents with strict role separation, context isolation, and nonce-proof reads.",
-    "version": "0.1.1"
+    "description": "Multi-agent workflow for Claude Code where discipline is enforced by hooks, not personas. 23 subagents with strict role separation, context isolation, and nonce-proof reads.",
+    "version": "1.1.1"
   },
   "plugins": [
     {
       "name": "fsm-workflow",
       "source": "./plugins/fsm-workflow",
-      "description": "22-agent FSM pipeline. Marketplace install ships agents, commands, and templates only. Run the /fsm-setup-hooks command after install to complete the enforcement layer (hooks cannot be installed via the plugin marketplace and are required for the full package).",
-      "version": "0.1.1",
+      "description": "23-agent FSM pipeline. Marketplace install ships agents, commands, and templates only. Run the /fsm-setup-hooks command after install to complete the enforcement layer (hooks cannot be installed via the plugin marketplace and are required for the full package).",
+      "version": "1.1.1",
       "author": {
         "name": "itsaldrincr",
         "url": "https://github.com/itsaldrincr"

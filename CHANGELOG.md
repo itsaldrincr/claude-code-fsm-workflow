@@ -18,6 +18,39 @@ Sections within each release:
 
 ---
 
+## [1.1.1] — 2026-04-11
+
+Deterministic audit scripts replace two of the three LLM auditors. `orchestrate.py` gains a post-ALL_DONE audit gate. Bug fix to `atomize_task.py` for cross-parent dependency rewriting. Version drift in `plugin.json` / `marketplace.json` (`0.1.1` → `1.1.1`) fixed to match the tagged release scheme.
+
+Repo: https://github.com/itsaldrincr/claude-code-fsm-workflow
+
+### Added
+
+- **`scripts/audit_discipline.py`** — AST-based coding discipline checker (436 lines). Replaces the `code-auditor` LLM subagent. Enforces F1–F10 + F22 from CLAUDE.md: max 2 params, max 20 body lines, max 3 public methods, type hints, no `print()`, no silent `except`, UPPER_SNAKE_CASE constants, import grouping, unused imports, bool naming via `bool` type annotation, graceful skip on syntax-error files. Uses `ast.NodeVisitor`. Exit 0 clean / 1 violations / 2 error. Output format: `file:line:scope -- rule -- detail`, sorted by (file, line) for determinism. Skips `from __future__ import annotations` correctly.
+- **`scripts/check_deps.py`** — Import resolution + unused-import checker (330 lines). Replaces the `dep-checker` LLM subagent. Uses `importlib.util.find_spec` for resolution; honors `__all__` for exported-name verification; handles relative imports, PEP 420 namespace packages, and star imports gracefully. Prepends `Path.cwd()` to `sys.path` at startup so local-package imports resolve in subprocess invocations. One violation per import statement (not per imported name).
+- **`scripts/session_close.py`** — Test-gated session cleanup (130 lines). Replaces the `session-closer` subagent. Runs `pytest`; on pass, deletes `task_*.md` files, deletes the `.audit_clean` sentinel, overwrites `MAP.md` with the embedded `CLEAN_MAP_TEMPLATE`. On test failure, no cleanup. Supports `--workspace` and `--dry-run` flags. `SUBPROCESS_TIMEOUT_SECONDS = 600`. Uses `sys.executable` instead of hardcoded `"python"`.
+- **Audit gate in `scripts/orchestrate.py`** — post-ALL_DONE hook that runs the deterministic audit scripts via `subprocess.run`, writes `.audit_clean` sentinel on clean audit, runs `session_close.py`, and maps session_close failure to a new `EXIT_ERROR` detail (`"session_close failed"`). New constants `EXIT_AUDIT_FAILED = 5`, `AUDIT_SENTINEL = ".audit_clean"`, `PYTHON_EXECUTABLE = sys.executable`, `SUBPROCESS_TIMEOUT_SECONDS = 600`. New dataclass `AuditGateResult(is_clean, detail)`. Dry-run short-circuits the gate entirely. Sentinel check-and-write guarded by the existing `map_lock` context manager to prevent concurrent-orchestrator races. stderr captured and included in the detail string on subprocess failure.
+- **`tests/test_audit_discipline.py`, `tests/test_check_deps.py`, `tests/test_session_close.py`** — 101 new tests covering every requirement (F1–F23, N1–N6), edge cases (syntax errors, BOM files, namespace packages, relative imports, `from __future__`, `from unittest import mock`), and main-entry-point exit codes.
+- **Audit gate test coverage** in `tests/test_orchestrate.py` — `TestAuditGateClean`, `TestAuditGateFailed`, `TestAuditGateSentinel`, `TestAuditGateDryRun`, `TestAuditGateSessionCloseFailure`. Existing `TestHandleAllDone` and `TestRunCycleAllDone` updated to mock the new subprocess calls.
+
+### Changed
+
+- **`plugins/fsm-workflow/templates/CLAUDE.md`** refreshed to the canonical 390-line template. Audit-phase bullet now reflects deterministic scripts replacing LLM auditors.
+- **Audit phase in pipeline** (`CLAUDE.md` workflow step 7) — changed from "`code-auditor` + `bug-scanner` + `dep-checker` in parallel" (3 LLM subagents) to "`audit_discipline.py` + `check_deps.py` run deterministically via subprocess; `bug-scanner` LLM runs in parallel for logic checks". Net: 2 fewer LLM dispatches per pipeline cycle, zero token cost for discipline + dep checks, no 529 retry risk.
+- **`plugins/fsm-workflow/.claude-plugin/plugin.json`** version `0.1.1` → `1.1.1`. Fixes a pre-existing drift where `plugin.json` was never bumped when `v1.1.0` was tagged.
+- **`.claude-plugin/marketplace.json`** version `0.1.1` → `1.1.1`. Same drift fix.
+
+### Fixed
+
+- **`scripts/atomize_task.py` cross-parent dependency rewriting.** Previously, atomizing a task whose parent dependencies included other parents in the same batch (e.g. `task_804` depends on `[task_801, task_802, task_803]`) left the newly-created subtask files pointing to the now-deleted parent IDs instead of each parent's last subtask (`task_801c`, `task_802c`, `task_803c`). New `_rewrite_parent_depends()` helper + `DependsReplacement` dataclass + accumulated `rewrites: dict[str, str]` in `atomize_tasks()` rewrite each parent's depends line on disk before atomization. Test: `tests/test_atomize_task.py::TestMultiParentDepsRewrite`.
+- **`install.sh` was silently skipping the four top-level enforcement hooks.** `block-map-writes.sh`, `block-worker-reads.sh`, `block-model-override.sh`, and `surface-map-on-start.sh` have always shipped in `hooks/` but were never copied to `~/.claude/hooks/` or registered in `settings.json` by the installer. The `/fsm-setup-hooks` slash command description claimed these hooks were installed — a lie. Fresh marketplace users got the repo-map + pipeline-enforce + fsm-trace hooks (9 files) but none of the 4 enforcement hooks that are the entire moat of this package. Without them: MAP writes aren't blocked, worker reads aren't isolated, model overrides aren't prevented, and MAP status doesn't surface at session start. `install.sh` now copies all 4 to `~/.claude/hooks/` (top-level), chmods them executable, and registers them with the correct matchers (`PreToolUse Write|Edit|MultiEdit`, `PreToolUse Read`, `PreToolUse Agent`, `SessionStart`).
+- **`install.sh` was missing `src/repo_map/` source tree and `post_tool_trace.sh`** from the repo. `install.sh` required `$SOURCE_DIR/src/repo_map/` to exist (it tries to `cp -R` the tree into `~/.claude/hooks/repo-map/`) but the repo only had `src/fsm_core/`. Same for `hooks/post_tool_trace.sh` — referenced by `$TRACE_HOOK_SOURCE_DIR/$HOOK_POST_TOOL_TRACE` but missing from the repo's `hooks/`. Any fresh checkout that ran `./install.sh` would have errored out with "source tree not found at .../src/repo_map". Both are now committed, so `install.sh` runs clean end-to-end against a fresh clone.
+- **`install.sh` agent source path** was `$SOURCE_DIR/agents/` but the v1.1.0 restructure moved agents to `plugins/fsm-workflow/agents/` for marketplace layout. `install.sh` is now updated to read from the plugin path with a fallback to the legacy top-level for older forks.
+- **`plugin.json` and `marketplace.json` version drift.** Both manifests reported `"version": "0.1.1"` through the entire v1.0.0 and v1.1.0 tag history — they were never bumped. Both now match the tag scheme at `"1.1.1"`.
+- **Agent count claim corrected.** `plugin.json` description and `fsm-setup-hooks.md` said "22 subagents" — off by one. The plugin actually ships 23 agents (advisor, architect, bug-scanner, code-auditor, code-fixer, code-reviewer, debugger, dep-checker, dispatcher, doc-writer, explore-scout, explore-superscout, file-lister, fsm-executor, fsm-integrator, mock-server, mockup-verifier, research-scout, session-closer, session-handoff, spec-writer, task-planner, test-runner). All descriptions updated.
+
+---
+
 ## [1.1.0] — 2026-04-11
 
 Pipeline automation engine, per-wave advisor gate, enforcement hooks, and 315 tests.

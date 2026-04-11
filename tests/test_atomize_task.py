@@ -440,5 +440,43 @@ class TestAtomizeRollback(unittest.TestCase):
             self.assertEqual(len(subtask_files), 0)
 
 
+class TestMultiParentDepsRewrite(unittest.TestCase):
+    """Verify atomize_tasks rewrites cross-parent depends to last-subtask IDs."""
+
+    def test_later_parent_depends_updated_to_last_subtasks(self) -> None:
+        from scripts.atomize_task import AtomizeRequest, atomize_tasks
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            map_path = tmp / "MAP.md"
+            map_path.write_text(
+                "# MAP\n\n## Active Tasks\n\n"
+                "  [task_901_first.md] ........ PENDING\n"
+                "  [task_902_second.md] ....... PENDING  depends: task_901\n",
+                encoding="utf-8",
+            )
+            first = tmp / "task_901_first.md"
+            first.write_text(
+                "---\nid: task_901\nname: first\nstate: PENDING\nstep: 0 of 2\n"
+                "depends: []\nwave: 1\ndispatch: fsm-executor\ncheckpoint: aaa\ncreated: 2026-01-01\n---\n\n"
+                "## Files\nCreates:\n  a.py\n\n## Program\n1. First A\n2. First B\n",
+                encoding="utf-8",
+            )
+            second = tmp / "task_902_second.md"
+            second.write_text(
+                "---\nid: task_902\nname: second\nstate: PENDING\nstep: 0 of 2\n"
+                "depends: [task_901]\nwave: 2\ndispatch: fsm-integrator\ncheckpoint: bbb\ncreated: 2026-01-01\n---\n\n"
+                "## Files\nModifies:\n  a.py\n\n## Program\n1. Second A\n2. Second B\n",
+                encoding="utf-8",
+            )
+            request = AtomizeRequest(task_paths=[str(first), str(second)], map_path=str(map_path))
+            atomize_tasks(request)
+            subtask_902a = next(tmp.glob("task_902a_*.md"))
+            content = subtask_902a.read_text(encoding="utf-8")
+            self.assertIn("depends: [task_901b]", content)
+            self.assertNotIn("depends: [task_901]", content)
+            map_after = map_path.read_text(encoding="utf-8")
+            self.assertIn("depends: task_901b", map_after)
+
+
 if __name__ == "__main__":
     unittest.main()
