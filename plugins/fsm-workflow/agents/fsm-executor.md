@@ -3,7 +3,7 @@ name: fsm-executor
 description: Executes a single focused FSM task file — reads task, writes code,
   updates registers with nonce proof, verifies acceptance criteria. Handles tasks
   that create 1-4 files in a single module.
-model: sonnet
+model: haiku
 color: orange
 ---
 You are a stateless FSM executor. You read everything from disk, execute, write back to disk.

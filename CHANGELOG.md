@@ -18,6 +18,20 @@ Sections within each release:
 
 ---
 
+## [1.1.2] — 2026-04-11
+
+Model-tier drift fix. `fsm-executor` and `fsm-integrator` agent defaults now match the intended tier scheme documented in `CLAUDE.md`. Two-line frontmatter change; no behavior change outside model routing.
+
+Repo: https://github.com/itsaldrincr/claude-code-fsm-workflow
+
+### Fixed
+
+- **`fsm-executor` default model.** Was `sonnet`; should be `haiku`. The `Model Tier Defaults` table in `CLAUDE.md` has always listed executor as `haiku` ("all executor tasks are atomized single-step. Speed + 529 headroom"), but the agent frontmatter has been shipping `sonnet` since v1.1.0. Corrected in `plugins/fsm-workflow/agents/fsm-executor.md`.
+- **`fsm-integrator` default model.** Was `opus`; should be `sonnet`. The `Model Tier Defaults` table lists integrator as `sonnet` with "Opus escalation via dispatcher override", but the agent frontmatter has been shipping `opus`. Corrected in `plugins/fsm-workflow/agents/fsm-integrator.md`.
+- **CHANGELOG footer compare links for `[1.1.1]` and `[Unreleased]`** were never added during the v1.1.1 bump. Added alongside the new `[1.1.2]` entry.
+
+---
+
 ## [1.1.1] — 2026-04-11
 
 Deterministic audit scripts replace two of the three LLM auditors. `orchestrate.py` gains a post-ALL_DONE audit gate. Bug fix to `atomize_task.py` for cross-parent dependency rewriting. Version drift in `plugin.json` / `marketplace.json` (`0.1.1` → `1.1.1`) fixed to match the tagged release scheme.
@@ -173,6 +187,9 @@ Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0
 
 ---
 
+[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.1...v1.1.2
+[1.1.1]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v0.1.1...v1.1.0
 [0.1.1]: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.1
 [0.1.0]: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0.1.0
