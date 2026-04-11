@@ -117,14 +117,17 @@ cd claude-code-fsm-workflow
 ```
 
 This installs:
-- 22 agents → `~/.claude/agents/`
-- 6 user-level hooks → `~/.claude/hooks/`
-- `src/fsm_core/` → `~/.claude/hooks/fsm-trace/fsm_core/`
-- 2 slash commands → `~/.claude/commands/`
-- Project templates → `~/.claude/templates/`
-- Hook registrations merged into `~/.claude/settings.json` (9 entries)
+- **23 agents** → `~/.claude/agents/`
+- **13 hook files across 4 categories** → `~/.claude/hooks/`
+  - 4 top-level enforcement hooks: `block-map-writes.sh`, `block-worker-reads.sh`, `block-model-override.sh`, `surface-map-on-start.sh`
+  - 2 pipeline-enforce hooks: `pipeline-enforce/validate_map_transition.py`, `pipeline-enforce/nudge_orchestrate.py`
+  - 6 repo-map hooks: `repo-map/src/repo_map/hooks/{pre_read,post_read,post_grep,post_edit,session_start,stop}.py`
+  - 1 FSM trace hook: `fsm-trace/post_tool_trace.sh`
+- **`src/fsm_core/` + `src/repo_map/`** Python trees → `~/.claude/hooks/fsm-trace/fsm_core/` and `~/.claude/hooks/repo-map/src/repo_map/`
+- **2 slash commands** (`/init-workflow`, `/fsm-setup-hooks`) → `~/.claude/commands/` (via plugin install) or available directly after running this installer
+- **13 hook registrations** merged into `~/.claude/settings.json` with the correct event + matcher pairs (`PreToolUse` Write/Edit/MultiEdit, Read, Agent, Edit for validate; `PostToolUse` Read, Grep, Edit/Write/MultiEdit, unscoped for trace; `SessionStart` × 2; `Stop`)
 
-Idempotent. Backs up `settings.json` before any change.
+Idempotent. Backs up `settings.json` before any change (`settings.json.bak.<timestamp>`). Re-running adds zero entries if the install is already complete.
 
 ### Mode 2: Plugin marketplace (agents only — hooks added separately)
 
@@ -161,10 +164,10 @@ This bootstraps `CLAUDE.md`, `.claude/settings.json`, and the discipline gate. T
 6. **Atomizer** splits multi-step tasks into single-step sub-tasks (`python scripts/atomize_task.py`).
 7. **Workers** execute in dependency waves. `fsm-executor` (Haiku) for atomized tasks, `fsm-integrator` (Sonnet) for cross-module work.
 8. **Advisor gate** — when all wave tasks are DONE, one Opus advisor reviews the batch. APPROVE → next wave. REVISE → targeted re-dispatch (max 3 rounds).
-9. **Audit** — `code-auditor` + `bug-scanner` + `dep-checker` in parallel.
+9. **Audit** — `audit_discipline.py` + `check_deps.py` run deterministically via subprocess (~1s each, zero token cost). `bug-scanner` LLM runs in parallel for logic-bug detection. `orchestrate.py` gates on the `.audit_clean` sentinel file before proceeding.
 10. **Fix loops** — `code-fixer` or `debugger` iterate until clean.
 11. **Test-runner** — full suite.
-12. **Session-closer** — resets MAP.md when tests pass.
+12. **Session-closer** — `session_close.py` runs pytest, gates all cleanup on exit 0, then deletes `task_*.md`, removes the sentinel, and resets `MAP.md` to the clean template.
 
 ### Automated dispatch
 
@@ -192,14 +195,23 @@ No cost difference on Max. Tier choice is quality vs. speed vs. rate-limit press
 ## Uninstall
 
 ```bash
-rm -rf ~/.claude/agents/{architect,bug-scanner,code-auditor,code-fixer,code-reviewer,debugger,dep-checker,dispatcher,doc-writer,explore-scout,explore-superscout,file-lister,fsm-executor,fsm-integrator,mock-server,mockup-verifier,research-scout,session-closer,session-handoff,spec-writer,task-planner,test-runner}.md
+# 23 agent definitions
+rm -rf ~/.claude/agents/{advisor,architect,bug-scanner,code-auditor,code-fixer,code-reviewer,debugger,dep-checker,dispatcher,doc-writer,explore-scout,explore-superscout,file-lister,fsm-executor,fsm-integrator,mock-server,mockup-verifier,research-scout,session-closer,session-handoff,spec-writer,task-planner,test-runner}.md
+
+# 4 top-level enforcement hooks
 rm ~/.claude/hooks/{block-map-writes,block-worker-reads,block-model-override,surface-map-on-start}.sh
+
+# Pipeline-enforce + fsm-trace + repo-map hook trees
 rm -rf ~/.claude/hooks/pipeline-enforce
+rm -rf ~/.claude/hooks/fsm-trace
+rm -rf ~/.claude/hooks/repo-map
+
+# Slash commands + templates
 rm ~/.claude/commands/init-workflow.md ~/.claude/commands/fsm-setup-hooks.md
 rm -rf ~/.claude/templates
 ```
 
-Restore your pre-install settings: `cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json`
+Restore your pre-install settings: `cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json` (pick the oldest backup from before the install to revert all 13 hook registrations at once).
 
 ## Troubleshooting
 
