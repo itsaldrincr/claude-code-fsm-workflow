@@ -2,6 +2,11 @@
 
 **Discipline enforced by hooks. Dispatch automated by code. Audits run as scripts, not agents.** A multi-agent pipeline for Claude Code where 23 subagents operate under strict role separation, context isolation, and nonce-proof reads — with an automated dispatch engine that reads state, decides actions, dispatches workers, gates waves through Opus-tier review, and audits the output via deterministic AST checks. Brainstorm → spec → architect → plan → atomize → execute → advisor gate → audit (scripts) → test → close.
 
+## What's new in v1.1.2
+
+- **Model-tier drift fix.** `fsm-executor` was shipping with `model: sonnet` and `fsm-integrator` with `model: opus` since v1.1.0, despite the Model Tier Defaults table (below) calling for `haiku` and `sonnet` respectively. Both agent frontmatters are now corrected. Marketplace and direct-clone installs pick up the new defaults automatically; re-run `install.sh` (or re-install the plugin) to apply.
+- **CHANGELOG footer links** for `[1.1.1]` and `[Unreleased]` were never added during the v1.1.1 bump. Restored alongside the new `[1.1.2]` entry.
+
 ## What's new in v1.1.1
 
 - **Deterministic audit scripts replace 2 of the 3 LLM auditors** — `scripts/audit_discipline.py` (AST-based coding discipline checker, replaces `code-auditor`) and `scripts/check_deps.py` (import resolution + unused-import checker, replaces `dep-checker`). Each runs in ~1 second against the full codebase with zero token cost. Exit 0 clean / 1 violations / 2 error. Output: `file:line:scope -- rule -- detail`, sorted by (file, line) for determinism. `bug-scanner` stays as an LLM subagent because logic-bug detection still needs reasoning.
