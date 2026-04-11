@@ -94,6 +94,45 @@ if [ -d "$AGENTS_SOURCE_DIR" ]; then
     done
 fi
 
+# ── copy slash commands ───────────────────────────────────────────────────────
+# Slash commands live in plugins/fsm-workflow/commands/. Direct-clone installs
+# copy them to ~/.claude/commands/ so /init-workflow and /fsm-setup-hooks are
+# usable without going through the plugin marketplace.
+COMMANDS_SOURCE_DIR="$SOURCE_DIR/plugins/fsm-workflow/commands"
+COMMANDS_TARGET_DIR="$HOME/.claude/commands"
+if [ -d "$COMMANDS_SOURCE_DIR" ]; then
+    mkdir -p "$COMMANDS_TARGET_DIR"
+    for cmd_file in "$COMMANDS_SOURCE_DIR"/*.md; do
+        [ -f "$cmd_file" ] && cp "$cmd_file" "$COMMANDS_TARGET_DIR/"
+    done
+fi
+
+# ── copy project templates ────────────────────────────────────────────────────
+# /init-workflow reads these templates when bootstrapping a fresh project's
+# CLAUDE.md + discipline gate. Copied to ~/.claude/templates/ so the slash
+# command can find them without knowing the repo path.
+TEMPLATES_SOURCE_DIR="$SOURCE_DIR/plugins/fsm-workflow/templates"
+TEMPLATES_TARGET_DIR="$HOME/.claude/templates"
+if [ -d "$TEMPLATES_SOURCE_DIR" ]; then
+    mkdir -p "$TEMPLATES_TARGET_DIR"
+    cp -R "$TEMPLATES_SOURCE_DIR"/. "$TEMPLATES_TARGET_DIR/"
+    find "$TEMPLATES_TARGET_DIR/hooks" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+fi
+
+# ── copy orchestrator + audit scripts ─────────────────────────────────────────
+# scripts/orchestrate.py, atomize_task.py, audit_discipline.py, check_deps.py,
+# session_close.py need to be reachable from a known location so /init-workflow
+# can copy them into each new project without hardcoding the repo path.
+SCRIPTS_SOURCE_DIR="$SOURCE_DIR/scripts"
+SCRIPTS_TARGET_DIR="$HOME/.claude/scripts"
+if [ -d "$SCRIPTS_SOURCE_DIR" ]; then
+    mkdir -p "$SCRIPTS_TARGET_DIR"
+    for script_file in "$SCRIPTS_SOURCE_DIR"/*.py; do
+        [ -f "$script_file" ] && cp "$script_file" "$SCRIPTS_TARGET_DIR/"
+    done
+    find "$SCRIPTS_TARGET_DIR" -type f -name "*.py" -exec chmod +x {} \;
+fi
+
 # ── ensure settings.json exists ────────────────────────────────────────────────
 mkdir -p "$(dirname "$SETTINGS")"
 if [ ! -f "$SETTINGS" ]; then
@@ -179,4 +218,7 @@ echo "  skipped:   $skipped_count (already present)"
 echo "  fsm-trace target: $TRACE_HOOK_TARGET_DIR/"
 echo "  fsm_core target:  $FSM_CORE_TARGET_DIR/"
 echo "  agents target:    $AGENTS_TARGET_DIR/"
+echo "  commands target:  $COMMANDS_TARGET_DIR/"
+echo "  templates target: $TEMPLATES_TARGET_DIR/"
+echo "  scripts target:   $SCRIPTS_TARGET_DIR/"
 echo "  enforcement:      $ENFORCEMENT_HOOK_TARGET_DIR/{block-*,surface-*}.sh"
