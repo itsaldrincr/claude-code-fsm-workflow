@@ -18,6 +18,56 @@ Sections within each release:
 
 ---
 
+## [1.2.2] — 2026-04-12
+
+Release ergonomics + opt-in user gates + progressive disclosure. Three features ship together: optional PHASE CHECKPOINT via `AskUserQuestion`, SWE-bench Verified harness skeleton under `bench/`, and a slim downstream `CLAUDE.md` with six carved skills. Parallel worker dispatch and wave-batch advisor land alongside. Backwards compatible — pipelines with no flagged tasks behave byte-identically to v1.1.2.
+
+Repo: https://github.com/itsaldrincr/claude-code-fsm-workflow
+
+### Added
+
+- **`requires_user_confirmation: bool = false` frontmatter field** on task files. When set on any task in a wave, `orchestrate.py` writes a `.checkpoint_pending` JSON sentinel under `map_lock()` at wave completion and returns `EXIT_WAITING`. The orchestrator agent reads the sentinel and fires Claude Code's `AskUserQuestion` with wave number, triggering task IDs, next-wave plan, and four options (Approve / Revise / Abort / Skip-for-remainder). Decline writes `status: "paused"` to `session_state.json`.
+- **`bench/` directory** — SWE-bench Verified harness skeleton. `bench/prepare_instance.py` creates isolated workspaces from SWE-bench instances with git baseline commits. `bench/evaluate.py` ships a local heuristic diff-match backend with a pluggable interface for the official `swebench` eval. `bench/run_one.py` drives `orchestrate.py` end-to-end against a prepared workspace and emits per-instance `bench_result.json`. `bench/runner.py` is the batch entry point, aggregating results under `bench/baselines/run_<timestamp>.json`. `bench/requirements.txt` is the first third-party deps in the repo, scoped strictly to `bench/`. `BENCH_INSTANCE_TIMEOUT_SECONDS = 1800` (30-minute per-instance timeout). No baseline numbers shipped.
+- **Six Claude Code skills** under `plugins/fsm-workflow/skills/`: `fsm-roles.md`, `fsm-task-format.md`, `fsm-map-format.md`, `fsm-workflow-phases.md`, `fsm-hook-enforcement.md`, `model-tier-routing.md`. Carved from the monolithic `CLAUDE.md` rules body. Each skill has `name`, `description`, `color` frontmatter and loads on-demand via Claude Code's skill loader.
+- **`scripts/orchestrate_monitor.sh`** — persistent shell loop for Claude Code's Monitor tool. Drives `orchestrate.py` in a loop, emits timestamped state-count events on stdout, exits on pipeline completion / BLOCKED / ERROR. `--dry-run` flag for smoke testing.
+- **`scripts/split_claude_md.py`** — release-prep helper that splits the local authoritative `CLAUDE.md` into the slim downstream template + six skill files. Prevents drift when `CLAUDE.md` changes.
+- **Parallel worker dispatch** — `dispatch_workers_parallel(requests: list[WorkerDispatchRequest])` in `src/fsm_core/subprocess_dispatch.py` uses `ThreadPoolExecutor(max_workers=8)` to launch multiple workers concurrently. `_handle_dispatch_wave` in `scripts/orchestrate.py` flips all ready tasks to `IN_PROGRESS`, parallel-dispatches, then flips each to `REVIEW` or `FAILED` based on exit code.
+- **Wave-batch advisor** — `_maybe_advisor_at_wave_gate` in `src/fsm_core/action_decider.py` returns a single `DISPATCH_ADVISOR` action containing every REVIEW task in the earliest-REVIEW wave. Advisor reviews the full batch in one pass. APPROVE flips every wave task REVIEW → DONE. REVISE parses an explicit `FAILING TASKS: task_NNNa, ...` line and flips only flagged tasks to PENDING.
+- **`extract_flagged_task_ids(guidance, candidates)`** in `src/fsm_core/advisor_parser.py` — prefers the explicit `FAILING TASKS:` line, falls back to free-text scanning for task_id patterns.
+- **`WAVE_CHECKPOINT_PENDING`** action type + `_find_wave_checkpoint` helper in `action_decider.py`.
+- **`"paused"` SessionState variant** + optional `checkpoints_skipped_this_session: bool` field on `SessionState`. Orchestrator writes paused state on user decline; `_should_skip_dispatch` guards against advancing a paused session.
+- **`MAX_PARALLEL_WORKERS: int = 8`** constant in `subprocess_dispatch.py`.
+- **`--permission-mode bypassPermissions`** flag on `claude -p` worker subprocess invocations. Fixes a silent failure mode where the Write tool was blocked by default on fresh paths.
+- **Hardened worker prompt** (`_build_worker_prompt`) with seven explicit rules: real tool calls only (no hallucinated DONE), verify-before-DONE via Read/Bash, flip every `- [ ]` acceptance checkbox to `- [x]`, nonce proof in Registers, correct state transition, never read MAP.md / CLAUDE.md, REVISE awareness via Registers re-read.
+- **Install step for skills** — `install.sh` now copies `plugins/fsm-workflow/skills/*.md` into `~/.claude/skills/` idempotently with a count printout.
+- **`init-workflow` self-installs skills** if `~/.claude/skills/fsm-*.md` are missing, so the slim downstream `CLAUDE.md` always has its on-demand references available.
+- **`bench/` test suite** under `tests/bench/`: `test_prepare_instance.py`, `test_evaluate.py`, `test_run_one.py`, `test_runner.py`. Full suite now 458 tests.
+
+### Changed
+
+- **`plugins/fsm-workflow/templates/CLAUDE.md` slimmed** from 399 to 134 lines. Contains coding discipline, MAP.md write authority, worker context isolation, default behaviour, rules, project notes, and a 6-line skill footer. The six carved skills carry the detailed reference material and load on-demand.
+- **`AdvisorDispatchRequest.task_paths: list[str]`** (was `task_path: str`). `_build_advisor_prompt` rewritten to review the whole wave in one review pass, requiring the advisor to return an explicit second-line `FAILING TASKS: task_NNNa, task_NNNb, ...` on REVISE.
+- **`DEFAULT_TIMEOUT_SECONDS`** bumped from 900 to 1800 seconds for integrator headroom.
+- **`GUIDANCE_SUMMARY_LIMIT`** bumped from 100 to 2000 characters so advisor REVISE feedback survives truncation into task Registers.
+- **`TaskStatus.wave: int = 0`** field added to `src/fsm_core/action_decider.py`. `_all_deps_satisfied` treats REVIEW as "worker complete" for intra-wave cascade purposes: a dep is satisfied if the predecessor is DONE OR (REVIEW AND same wave). Cross-wave deps still require DONE.
+- **`decide_action` refactored** into a `_DECISION_CASCADE` tuple: `_check_blocked → _check_wave_advisor → _find_wave_checkpoint → _check_ready_wave → _check_all_done`. Checkpoint precedes ready-wave to prevent a DONE wave with `requires_user_confirmation=true` from being bypassed by a ready-wave dispatch.
+- **`README.md` Benchmarking section** documents the `bench/` harness with Prerequisites, Running Single/Batch, Known Limitations, and a Third-party Dependencies callout explaining that `bench/` is the one subdirectory allowed non-stdlib deps.
+
+### Fixed
+
+- **Worker hallucinated-DONE silent failure.** Workers dispatched via `claude -p` were failing silently on CREATE-heavy tasks because the subprocess Write tool was blocked by default. `orchestrate.py` parsed the worker's final response as `state: DONE` but no files landed on disk. Fixed by adding `--permission-mode bypassPermissions` to the subprocess invocation and mandating real tool calls in the worker prompt.
+- **`_revise_wave_batch` deadlock.** Previously short-circuited on the first task to hit `MAX_REVISE_ROUNDS`, leaving remaining REVIEW tasks in limbo. Now accumulates BLOCKED results across all targets and returns the first after processing every flagged task.
+- **`_DECISION_CASCADE` ordering bypass.** `_find_wave_checkpoint` was evaluated AFTER `_check_ready_wave`, meaning a DONE wave with `requires_user_confirmation=true` could be bypassed if wave N+1 had ready PENDING tasks. Moved checkpoint ahead of ready-wave.
+- **`SessionState._parse_state_file`** silently dropped `checkpoints_skipped_this_session` on every read. Skip-for-session shortcut was effectively broken. Now round-trips the field via `data.get("checkpoints_skipped_this_session", False)`.
+- **Checkpoint sentinel race window.** `_run_cycle` now re-checks `_should_skip_dispatch` after `decide_action` to shrink the write-race window where a concurrent process could write `.checkpoint_pending` between the initial check and dispatch.
+- **CHANGELOG footer compare links** for `[1.2.2]` added alongside the new entry.
+
+### Removed
+
+- **Dead per-task REVISE path.** `_handle_revise`, `_run_revise_dispatch`, `_flip_to_blocked`, and `ReviseContext` are no longer reachable now that wave-batch REVISE re-dispatches flagged tasks via the normal `_find_ready_tasks` → `_handle_dispatch_wave` path.
+
+---
+
 ## [1.1.2] — 2026-04-11
 
 Model-tier drift fix. `fsm-executor` and `fsm-integrator` agent defaults now match the intended tier scheme documented in `CLAUDE.md`. Two-line frontmatter change; no behavior change outside model routing.
@@ -187,7 +237,8 @@ Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0
 
 ---
 
-[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.2...v1.2.2
 [1.1.2]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v0.1.1...v1.1.0

@@ -17,6 +17,7 @@ class TaskFrontmatter:
     checkpoint: str
     created: str
     parent: str = ""
+    requires_user_confirmation: bool = False
 
 
 def _extract_frontmatter_block(content: str) -> str:
@@ -60,6 +61,11 @@ REQUIRED_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def _parse_bool(raw: str) -> bool:
+    """Parse boolean from YAML string value."""
+    return raw.lower() in ("true", "yes", "1")
+
+
 def parse_frontmatter(content: str) -> TaskFrontmatter:
     """Extract YAML frontmatter between --- delimiters."""
     block = _extract_frontmatter_block(content)
@@ -78,4 +84,5 @@ def parse_frontmatter(content: str) -> TaskFrontmatter:
         checkpoint=fields["checkpoint"],
         created=fields["created"],
         parent=fields.get("parent", ""),
+        requires_user_confirmation=_parse_bool(fields.get("requires_user_confirmation", "")),
     )

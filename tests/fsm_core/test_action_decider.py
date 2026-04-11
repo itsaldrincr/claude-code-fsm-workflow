@@ -9,6 +9,7 @@ from src.fsm_core.action_decider import (
     ERROR_NO_TASKS,
     ESCALATE_BLOCKED,
     WAITING,
+    WAVE_CHECKPOINT_PENDING,
     Action,
     PipelineState,
     TaskStatus,
@@ -57,7 +58,7 @@ class TestDecideActionReviewPriority:
         assert action.tasks == ["t1"]
 
     def test_review_first_only(self) -> None:
-        """Should advise on only the first REVIEW task."""
+        """Batch-advise on all REVIEW tasks in the same wave."""
         state = PipelineState(
             tasks=[
                 TaskStatus("t1", "REVIEW", "fsm-executor", []),
@@ -66,15 +67,14 @@ class TestDecideActionReviewPriority:
         )
         action = decide_action(state)
         assert action.kind == DISPATCH_ADVISOR
-        assert action.tasks == ["t1"]
-        assert len(action.tasks) == 1
+        assert set(action.tasks) == {"t1", "t2"}
 
     def test_review_over_pending_ready(self) -> None:
-        """REVIEW takes priority over ready PENDING."""
+        """REVIEW in wave 1 takes priority over ready PENDING in wave 2."""
         state = PipelineState(
             tasks=[
-                TaskStatus("t1", "REVIEW", "fsm-executor", []),
-                TaskStatus("t2", "PENDING", "fsm-executor", []),
+                TaskStatus("t1", "REVIEW", "fsm-executor", [], wave=1),
+                TaskStatus("t2", "PENDING", "fsm-executor", [], wave=2),
             ]
         )
         action = decide_action(state)
@@ -262,3 +262,55 @@ class TestTaskStatusDataclass:
         task = TaskStatus("t1", "PENDING", "fsm-executor", [])
         with pytest.raises(AttributeError):
             task.task_id = "other"
+
+
+class TestWaveCheckpointPending:
+    """Test WAVE_CHECKPOINT_PENDING detection."""
+
+    def test_single_wave_flag_triggers_checkpoint(self) -> None:
+        """Wave with requires_user_confirmation=True triggers checkpoint when complete."""
+        state = PipelineState(
+            tasks=[
+                TaskStatus(
+                    "t1",
+                    "DONE",
+                    "fsm-executor",
+                    [],
+                    wave=1,
+                    requires_user_confirmation=True,
+                ),
+            ]
+        )
+        action = decide_action(state)
+        assert action.kind == WAVE_CHECKPOINT_PENDING
+        assert action.tasks == ["t1"]
+
+    def test_multi_wave_cascade(self) -> None:
+        """Wave 1 without flag completes normally; wave 2 flag triggers checkpoint."""
+        state = PipelineState(
+            tasks=[
+                TaskStatus("t1", "DONE", "fsm-executor", [], wave=1, requires_user_confirmation=False),
+                TaskStatus(
+                    "t2",
+                    "DONE",
+                    "fsm-executor",
+                    [],
+                    wave=2,
+                    requires_user_confirmation=True,
+                ),
+            ]
+        )
+        action = decide_action(state)
+        assert action.kind == WAVE_CHECKPOINT_PENDING
+        assert action.tasks == ["t2"]
+
+    def test_no_checkpoint_when_not_required(self) -> None:
+        """All DONE without requires_user_confirmation cascades to ALL_DONE."""
+        state = PipelineState(
+            tasks=[
+                TaskStatus("t1", "DONE", "fsm-executor", [], wave=1, requires_user_confirmation=False),
+            ]
+        )
+        action = decide_action(state)
+        assert action.kind == ALL_DONE
+        assert action.tasks == []

@@ -2,6 +2,18 @@
 
 **Discipline enforced by hooks. Dispatch automated by code. Audits run as scripts, not agents.** A multi-agent pipeline for Claude Code where 23 subagents operate under strict role separation, context isolation, and nonce-proof reads — with an automated dispatch engine that reads state, decides actions, dispatches workers, gates waves through Opus-tier review, and audits the output via deterministic AST checks. Brainstorm → spec → architect → plan → atomize → execute → advisor gate → audit (scripts) → test → close.
 
+## What's new in v1.2.2
+
+- **Opt-in PHASE CHECKPOINT.** New per-task frontmatter flag `requires_user_confirmation: bool = false`. When set, `orchestrate.py` halts at the end of the containing wave via a `.checkpoint_pending` sentinel; the orchestrator agent fires Claude Code's `AskUserQuestion` and deletes the sentinel on approval. Default pipeline stays fully autonomous — pipelines with zero flagged tasks are byte-identical to v1.1.2.
+- **SWE-bench Verified harness skeleton (`bench/`).** Scripts for isolating instances, driving `orchestrate.py` end-to-end, capturing the produced patch via git diff, evaluating against expected diffs with a local heuristic backend, and emitting per-instance + aggregate result JSON. No baseline numbers shipped — infrastructure only. First third-party deps in the repo, scoped strictly to `bench/requirements.txt`.
+- **Progressive-disclosure skills.** Downstream `plugins/fsm-workflow/templates/CLAUDE.md` slimmed from 399 → 134 lines by carving six passively-loaded Claude Code skills (`fsm-roles`, `fsm-task-format`, `fsm-map-format`, `fsm-workflow-phases`, `fsm-hook-enforcement`, `model-tier-routing`). Installer copies skills to `~/.claude/skills/` idempotently. `init-workflow` self-installs the skills if missing.
+- **Parallel worker dispatch.** `dispatch_workers_parallel` in `src/fsm_core/subprocess_dispatch.py` uses `ThreadPoolExecutor(max_workers=8)` to dispatch ready tasks concurrently via subprocess. Serial chains (a→b→c) still cascade sequentially — parallel where possible, sequential where dependent.
+- **Wave-batch advisor.** `src/fsm_core/action_decider.py` gates advisor dispatch on whole-wave REVIEW completion. One advisor call reviews the full wave at once. On REVISE, an explicit `FAILING TASKS: task_NNNa, ...` line in the advisor response re-dispatches only the flagged tasks, not the whole wave.
+- **Worker prompt hardening.** `_build_worker_prompt` now mandates real tool calls (no hallucinating DONE via text), pre-DONE verification, acceptance checkbox flipping, nonce proof in Registers, and REVISE awareness via Registers re-read.
+- **`--permission-mode bypassPermissions`** added to `claude -p` worker subprocess invocations. Fixes a silent failure mode where the Write tool was blocked by default on fresh paths.
+- **Post-build critical fixes:** `_revise_wave_batch` no longer short-circuits on first BLOCKED (deadlock fix); `_DECISION_CASCADE` moves `_find_wave_checkpoint` ahead of `_check_ready_wave` (gate-bypass fix); `SessionState._parse_state_file` now round-trips `checkpoints_skipped_this_session`; `_run_cycle` re-checks the checkpoint sentinel post-decide to shrink the write-race window.
+- **458 tests** across `fsm_core`, `bench/`, `orchestrate`, install, and split-helper suites.
+
 ## What's new in v1.1.2
 
 - **Model-tier drift fix.** `fsm-executor` was shipping with `model: sonnet` and `fsm-integrator` with `model: opus` since v1.1.0, despite the Model Tier Defaults table (below) calling for `haiku` and `sonnet` respectively. Both agent frontmatters are now corrected. Marketplace and direct-clone installs pick up the new defaults automatically; re-run `install.sh` (or re-install the plugin) to apply.

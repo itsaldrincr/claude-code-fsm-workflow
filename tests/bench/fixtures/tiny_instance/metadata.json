@@ -1,0 +1,7 @@
+{
+  "instance_id": "tiny-001",
+  "problem_statement": "Fix the broken hello function",
+  "hints": "Check the return statement and the format string",
+  "target_files": "src/hello.py",
+  "acceptance_criteria": "Function returns 'Hello, World!' when called"
+}

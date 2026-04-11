@@ -6,13 +6,21 @@ The user wants the FSM workflow installed in the current working directory. Exec
 
 ## Prerequisites
 
-This command depends on `~/.claude/templates/` and `~/.claude/scripts/` existing — both are populated by `/fsm-setup-hooks` (which runs `install.sh`). If either is missing, tell the user to run `/fsm-setup-hooks` first and stop.
+This command depends on `~/.claude/templates/`, `~/.claude/scripts/`, and `~/.claude/skills/` existing — all are populated by `/fsm-setup-hooks` (which runs `install.sh`). The `~/.claude/skills/` directory should contain:
+  - `fsm-roles.md`
+  - `fsm-task-format.md`
+  - `fsm-map-format.md`
+  - `fsm-hook-enforcement.md`
+  - `model-tier-routing.md`
+  - `fsm-workflow-phases.md`
+
+If any are missing, tell the user to run `/fsm-setup-hooks` first and stop.
 
 ## Steps
 
 1. **Check whether a workflow already exists.** Run `ls CLAUDE.md .claude/settings.json 2>/dev/null` in the CWD. If both exist, STOP and report "workflow already installed — nothing to do." If only one exists, ask whether to overwrite or merge.
 
-2. **Check prerequisites.** Run `ls ~/.claude/templates/CLAUDE.md ~/.claude/scripts/orchestrate.py 2>&1`. If either is missing, STOP and tell the user to run `/fsm-setup-hooks` first.
+2. **Check prerequisites.** Run `ls ~/.claude/templates/CLAUDE.md ~/.claude/scripts/orchestrate.py ~/.claude/skills/fsm-roles.md ~/.claude/skills/fsm-task-format.md ~/.claude/skills/fsm-map-format.md ~/.claude/skills/fsm-hook-enforcement.md ~/.claude/skills/model-tier-routing.md ~/.claude/skills/fsm-workflow-phases.md 2>&1`. If any are missing, STOP and tell the user to run `/fsm-setup-hooks` first.
 
 3. **Dispatch `doc-writer` in pre-workflow mode** with this exact prompt:
 
@@ -40,11 +48,33 @@ Report what was created with exact file paths and line counts.
    - `~/.claude/scripts/check_deps.py` → `<CWD>/scripts/check_deps.py` — import resolution checker
    - `~/.claude/scripts/session_close.py` → `<CWD>/scripts/session_close.py` — test-gated cleanup
 
-5. **Verify the install** after doc-writer returns and scripts are copied:
+5. **Copy any missing skill files from the package** (if running from within the installed package). Check if `<CWD>/plugins/fsm-workflow/skills/` exists. If it does, copy any missing files into `~/.claude/skills/`:
+   - Create `~/.claude/skills/` directory if needed
+   - For each of the six skill files, copy from `<CWD>/plugins/fsm-workflow/skills/` to `~/.claude/skills/` only if the target doesn't already exist:
+     - `fsm-roles.md`
+     - `fsm-task-format.md`
+     - `fsm-map-format.md`
+     - `fsm-hook-enforcement.md`
+     - `model-tier-routing.md`
+     - `fsm-workflow-phases.md`
+   - This step is idempotent: skips files that already exist in `~/.claude/skills/`. If the package plugins directory doesn't exist (i.e., running from a non-package location), skip this step silently.
+
+6. **Copy any missing skill files to the project** from `~/.claude/skills/` into `<CWD>/.claude/skills/`. Create the directory if it doesn't exist. The six skills are:
+   - `~/.claude/skills/fsm-roles.md` → `<CWD>/.claude/skills/fsm-roles.md`
+   - `~/.claude/skills/fsm-task-format.md` → `<CWD>/.claude/skills/fsm-task-format.md`
+   - `~/.claude/skills/fsm-map-format.md` → `<CWD>/.claude/skills/fsm-map-format.md`
+   - `~/.claude/skills/fsm-hook-enforcement.md` → `<CWD>/.claude/skills/fsm-hook-enforcement.md`
+   - `~/.claude/skills/model-tier-routing.md` → `<CWD>/.claude/skills/model-tier-routing.md`
+   - `~/.claude/skills/fsm-workflow-phases.md` → `<CWD>/.claude/skills/fsm-workflow-phases.md`
+   
+   Copy each skill file only if the target doesn't already have it, to maintain idempotency.
+
+7. **Verify the install** after doc-writer returns, scripts are copied, and skills are copied:
    - `CLAUDE.md` exists in CWD
    - `.claude/settings.json` exists
    - `.claude/hooks/discipline-gate.sh` exists and is executable
    - `scripts/orchestrate.py`, `scripts/atomize_task.py`, `scripts/audit_discipline.py`, `scripts/check_deps.py`, `scripts/session_close.py` all exist and are executable
+   - `.claude/skills/fsm-roles.md`, `.claude/skills/fsm-task-format.md`, `.claude/skills/fsm-map-format.md`, `.claude/skills/fsm-hook-enforcement.md`, `.claude/skills/model-tier-routing.md`, `.claude/skills/fsm-workflow-phases.md` all exist
    - Report any missing pieces
 
-6. **Confirm to the user:** workflow installed, ready for brainstorming. Suggest next steps: "describe what you want to build, or invoke `spec-writer` to capture an idea. Once you say 'build it', the pipeline auto-dispatches via `python scripts/orchestrate.py`."
+8. **Confirm to the user:** workflow installed, ready for brainstorming. Suggest next steps: "describe what you want to build, or invoke `spec-writer` to capture an idea. Once you say 'build it', the pipeline auto-dispatches via `python scripts/orchestrate.py`."

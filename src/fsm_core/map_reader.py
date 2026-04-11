@@ -17,6 +17,7 @@ class TaskInfo:
     dispatch_role: str
     depends: list[str]
     wave: int
+    requires_user_confirmation: bool
     task_path: str
 
 
@@ -66,6 +67,7 @@ def _build_task_info(request: _BuildTaskInfoRequest) -> TaskInfo | None:
             dispatch_role=fm.dispatch,
             depends=fm.depends,
             wave=fm.wave,
+            requires_user_confirmation=fm.requires_user_confirmation,
             task_path=str(request.task_path),
         )
     except Exception as exc:

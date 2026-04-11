@@ -48,6 +48,36 @@ parent: task_801
 ---
 """
 
+WITH_USER_CONFIRM_TRUE: str = """\
+---
+id: task_802
+name: confirm_true
+state: PENDING
+step: 0 of 1
+depends: []
+wave: 1
+dispatch: fsm-executor
+checkpoint: ghi789
+created: 2026-01-01
+requires_user_confirmation: true
+---
+"""
+
+WITH_USER_CONFIRM_FALSE: str = """\
+---
+id: task_803
+name: confirm_false
+state: PENDING
+step: 0 of 1
+depends: []
+wave: 1
+dispatch: fsm-executor
+checkpoint: jkl012
+created: 2026-01-01
+requires_user_confirmation: false
+---
+"""
+
 
 class TestParseFrontmatter:
     def test_parses_all_required_fields(self) -> None:
@@ -74,6 +104,18 @@ class TestParseFrontmatter:
     def test_missing_parent_defaults_empty(self) -> None:
         fm = parse_frontmatter(VALID_FRONTMATTER)
         assert fm.parent == ""
+
+    def test_parses_requires_user_confirmation_true(self) -> None:
+        fm = parse_frontmatter(WITH_USER_CONFIRM_TRUE)
+        assert fm.requires_user_confirmation is True
+
+    def test_parses_requires_user_confirmation_false(self) -> None:
+        fm = parse_frontmatter(WITH_USER_CONFIRM_FALSE)
+        assert fm.requires_user_confirmation is False
+
+    def test_missing_requires_user_confirmation_defaults_false(self) -> None:
+        fm = parse_frontmatter(VALID_FRONTMATTER)
+        assert fm.requires_user_confirmation is False
 
     def test_missing_delimiters_raises(self) -> None:
         with pytest.raises(ValueError, match="Malformed frontmatter"):

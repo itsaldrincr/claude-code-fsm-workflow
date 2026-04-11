@@ -67,7 +67,7 @@ class TestDispatchWorker:
 
     @patch("src.fsm_core.subprocess_dispatch.subprocess.run")
     def test_worker_prompt_format(self, mock_run: MagicMock) -> None:
-        """Worker prompt should match SOP template exactly."""
+        """Worker prompt should match hardened template with explicit requirements."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         task_path = "/path/to/task_123.md"
         req = WorkerDispatchRequest(
@@ -77,10 +77,12 @@ class TestDispatchWorker:
         dispatch_worker(req)
         call_args = mock_run.call_args
         cmd = call_args[0][0]
-        prompt = cmd[2]  # cmd is [claude, -p, prompt, --model, model]
+        prompt = cmd[2]
         assert f"Execute task file: {task_path}" in prompt
-        assert "This task file is self-contained." in prompt
-        assert "Read it, follow its Protocol" in prompt
+        assert "REAL TOOL CALLS ONLY" in prompt
+        assert "VERIFY BEFORE MARKING DONE" in prompt
+        assert "FLIP ACCEPTANCE CRITERIA BOXES" in prompt
+        assert "NONCE PROOF IN REGISTERS" in prompt
 
 
 class TestDispatchAdvisor:
@@ -88,9 +90,9 @@ class TestDispatchAdvisor:
 
     @patch("src.fsm_core.subprocess_dispatch.subprocess.run")
     def test_advisor_uses_opus(self, mock_run: MagicMock) -> None:
-        """Advisor dispatch should always use opus model."""
+        """Wave-batch advisor dispatch should always use opus model."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        req = AdvisorDispatchRequest(task_path="/path/to/task_123.md")
+        req = AdvisorDispatchRequest(task_paths=["/path/to/task_123.md"])
         dispatch_advisor(req)
         call_args = mock_run.call_args
         assert "--model" in call_args[0][0]
@@ -99,19 +101,19 @@ class TestDispatchAdvisor:
 
     @patch("src.fsm_core.subprocess_dispatch.subprocess.run")
     def test_advisor_prompt_format(self, mock_run: MagicMock) -> None:
-        """Advisor prompt should match spec template."""
+        """Wave-batch advisor prompt lists every task path and asks for a single verdict."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        task_path = "/path/to/task_456.md"
-        req = AdvisorDispatchRequest(task_path=task_path)
+        task_paths = ["/path/to/task_811a.md", "/path/to/task_811b.md", "/path/to/task_811c.md"]
+        req = AdvisorDispatchRequest(task_paths=task_paths)
         dispatch_advisor(req)
         call_args = mock_run.call_args
         cmd = call_args[0][0]
         prompt = cmd[2]
-        assert f"Review task file: {task_path}" in prompt
-        assert "Read the task file and every file listed in its ## Files section" in prompt
-        assert "Evaluate against the task's Acceptance Criteria" in prompt
-        assert "APPROVE - if all acceptance criteria are met" in prompt
-        assert "REVISE - if issues were found" in prompt
+        assert "Review the following wave batch as ONE review pass" in prompt
+        for path in task_paths:
+            assert path in prompt
+        assert "APPROVE - every task in the batch meets all criteria" in prompt
+        assert "REVISE - at least one task has an issue" in prompt
 
 
 class TestDispatchRevise:

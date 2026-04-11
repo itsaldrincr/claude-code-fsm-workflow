@@ -43,6 +43,7 @@ class SessionState:
     pipeline_stage: PipelineStage
     last_updated: str
     status: Status
+    checkpoints_skipped_this_session: bool = False
 
     def __post_init__(self) -> None:
         if self.active_wave < 0:
@@ -97,6 +98,7 @@ def _parse_state_file(path: Path) -> SessionState:
         pipeline_stage=data["pipeline_stage"],
         last_updated=data["last_updated"],
         status=data["status"],
+        checkpoints_skipped_this_session=data.get("checkpoints_skipped_this_session", False),
     )
 
 

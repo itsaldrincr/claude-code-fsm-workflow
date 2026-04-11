@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.orchestrate import (
+    CHECKPOINT_SENTINEL,
     EXIT_ACTION_TAKEN,
     EXIT_ALL_DONE,
     EXIT_AUDIT_FAILED,
@@ -21,7 +22,7 @@ from scripts.orchestrate import (
     _handle_waiting,
     _run_cycle,
 )
-from src.fsm_core.action_decider import Action, ESCALATE_BLOCKED
+from src.fsm_core.action_decider import Action, ESCALATE_BLOCKED, WAVE_CHECKPOINT_PENDING
 
 
 # ---- Fixtures ----
@@ -242,7 +243,7 @@ class TestRunCycleBlocked:
 
 
 class TestRunCycleDryRun:
-    @patch("scripts.orchestrate.dispatch_worker")
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
     def test_dry_run_does_not_call_dispatch(self, mock_dispatch: MagicMock, tmp_path: Path) -> None:
         """Dry-run mode skips subprocess calls."""
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
@@ -258,7 +259,7 @@ class TestRunCycleDryRun:
         _run_cycle(config)
         mock_flip.assert_not_called()
 
-    @patch("scripts.orchestrate.dispatch_worker")
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
     def test_dry_run_returns_action_taken(self, mock_dispatch: MagicMock, tmp_path: Path) -> None:
         """Dry-run still returns EXIT_ACTION_TAKEN for pending tasks."""
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
@@ -268,36 +269,50 @@ class TestRunCycleDryRun:
 
 
 class TestRunCycleDispatchWave:
-    @patch("scripts.orchestrate.dispatch_worker")
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
     @patch("scripts.orchestrate.update_map_status")
     def test_pending_task_dispatched(self, mock_flip: MagicMock, mock_dispatch: MagicMock, tmp_path: Path) -> None:
-        """PENDING task with no deps gets dispatched."""
-        mock_dispatch.return_value = MagicMock(exit_code=0)
+        """PENDING task with no deps gets dispatched via parallel dispatcher."""
+        mock_dispatch.return_value = [MagicMock(exit_code=0)]
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
         config = _make_config(fx.workspace)
         result = _run_cycle(config)
         assert result.exit_code == EXIT_ACTION_TAKEN
 
-    @patch("scripts.orchestrate.dispatch_worker")
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
     @patch("scripts.orchestrate.update_map_status")
     def test_dispatch_wave_output_action(self, mock_flip: MagicMock, mock_dispatch: MagicMock, tmp_path: Path) -> None:
         """dispatch_wave produces action='dispatch_wave' in output."""
-        mock_dispatch.return_value = MagicMock(exit_code=0)
+        mock_dispatch.return_value = [MagicMock(exit_code=0)]
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
         config = _make_config(fx.workspace)
         result = _run_cycle(config)
         assert result.output["action"] == "dispatch_wave"
 
-    @patch("scripts.orchestrate.dispatch_worker")
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
     @patch("scripts.orchestrate.update_map_status")
     def test_worker_failure_flips_to_failed(self, mock_flip: MagicMock, mock_dispatch: MagicMock, tmp_path: Path) -> None:
         """Worker non-zero exit flips status to FAILED."""
-        mock_dispatch.return_value = MagicMock(exit_code=1)
+        mock_dispatch.return_value = [MagicMock(exit_code=1)]
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
         config = _make_config(fx.workspace)
         _run_cycle(config)
         flip_calls = [call[0][0].new_status for call in mock_flip.call_args_list]
         assert "FAILED" in flip_calls
+
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
+    @patch("scripts.orchestrate.update_map_status")
+    def test_parallel_dispatch_called_with_all_ready_requests(
+        self, mock_flip: MagicMock, mock_dispatch: MagicMock, tmp_path: Path
+    ) -> None:
+        """dispatch_workers_parallel receives every ready task in one call."""
+        mock_dispatch.return_value = [MagicMock(exit_code=0)]
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
+        config = _make_config(fx.workspace)
+        _run_cycle(config)
+        mock_dispatch.assert_called_once()
+        requests = mock_dispatch.call_args[0][0]
+        assert len(requests) >= 1
 
 
 class TestRunCycleAdvisorApprove:
@@ -324,52 +339,46 @@ class TestRunCycleAdvisorApprove:
 
 
 class TestRunCycleAdvisorRevise:
-    @patch("scripts.orchestrate.dispatch_revise")
     @patch("scripts.orchestrate.dispatch_advisor")
     @patch("scripts.orchestrate.update_map_status")
-    def test_advisor_revise_re_dispatches_worker(
-        self, mock_flip: MagicMock, mock_advisor: MagicMock, mock_revise: MagicMock, tmp_path: Path
+    def test_advisor_revise_flips_flagged_to_pending(
+        self, mock_flip: MagicMock, mock_advisor: MagicMock, tmp_path: Path
     ) -> None:
-        """REVISE verdict triggers re-dispatch with guidance."""
+        """Wave-batch REVISE flips flagged tasks REVIEW -> PENDING; next cycle picks them up."""
         mock_advisor.return_value = MagicMock(exit_code=0, stdout="REVISE\nFix the thing")
-        mock_revise.return_value = MagicMock(exit_code=0)
-        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_REVIEW))
-        config = _make_config(fx.workspace)
-        result = _run_cycle(config)
-        mock_revise.assert_called_once()
-        assert result.exit_code == EXIT_ACTION_TAKEN
-
-    @patch("scripts.orchestrate.dispatch_revise")
-    @patch("scripts.orchestrate.dispatch_advisor")
-    @patch("scripts.orchestrate.update_map_status")
-    def test_revise_output_action_is_revise_worker(
-        self, mock_flip: MagicMock, mock_advisor: MagicMock, mock_revise: MagicMock, tmp_path: Path
-    ) -> None:
-        """REVISE verdict output action is 'revise_worker'."""
-        mock_advisor.return_value = MagicMock(exit_code=0, stdout="REVISE\nFix it")
-        mock_revise.return_value = MagicMock(exit_code=0)
-        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_REVIEW))
-        config = _make_config(fx.workspace)
-        result = _run_cycle(config)
-        assert result.output["action"] == "revise_worker"
-
-
-class TestRunCycleReviseFailure:
-    @patch("scripts.orchestrate.dispatch_revise")
-    @patch("scripts.orchestrate.dispatch_advisor")
-    @patch("scripts.orchestrate.update_map_status")
-    def test_revise_dispatch_failure_flips_to_failed(
-        self, mock_flip: MagicMock, mock_advisor: MagicMock, mock_revise: MagicMock, tmp_path: Path
-    ) -> None:
-        """REVISE dispatch failure flips task to FAILED and returns EXIT_ERROR."""
-        mock_advisor.return_value = MagicMock(exit_code=0, stdout="REVISE\nFix the thing")
-        mock_revise.return_value = MagicMock(exit_code=1)
         fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_REVIEW))
         config = _make_config(fx.workspace)
         result = _run_cycle(config)
         flip_calls = [call[0][0].new_status for call in mock_flip.call_args_list]
-        assert "FAILED" in flip_calls
-        assert result.exit_code == EXIT_ERROR
+        assert "PENDING" in flip_calls
+        assert result.exit_code == EXIT_ACTION_TAKEN
+
+    @patch("scripts.orchestrate.dispatch_advisor")
+    @patch("scripts.orchestrate.update_map_status")
+    def test_revise_output_action_is_revise_wave_batch(
+        self, mock_flip: MagicMock, mock_advisor: MagicMock, tmp_path: Path
+    ) -> None:
+        """Wave-batch REVISE output action is 'revise_wave_batch'."""
+        mock_advisor.return_value = MagicMock(exit_code=0, stdout="REVISE\nFix it")
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_REVIEW))
+        config = _make_config(fx.workspace)
+        result = _run_cycle(config)
+        assert result.output["action"] == "revise_wave_batch"
+
+
+class TestRunCycleReviseRoundsAppended:
+    @patch("scripts.orchestrate.dispatch_advisor")
+    @patch("scripts.orchestrate.update_map_status")
+    def test_revise_appends_round_note_to_registers(
+        self, mock_flip: MagicMock, mock_advisor: MagicMock, tmp_path: Path
+    ) -> None:
+        """Wave-batch REVISE writes a REVISE round entry into each flagged task's Registers."""
+        mock_advisor.return_value = MagicMock(exit_code=0, stdout="REVISE\nFix the thing")
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_REVIEW))
+        config = _make_config(fx.workspace)
+        _run_cycle(config)
+        task_content = (fx.workspace / "task_001_foo.md").read_text()
+        assert "REVISE round 1" in task_content
 
 
 class TestRunCycleAdvisorBlocked:
@@ -393,9 +402,9 @@ class TestRunCycleAdvisorBlocked:
 class TestJsonOutput:
     def test_dispatch_wave_output_has_required_keys(self, tmp_path: Path) -> None:
         """dispatch_wave JSON output contains action, tasks, detail keys."""
-        with patch("scripts.orchestrate.dispatch_worker") as mock_dispatch, \
+        with patch("scripts.orchestrate.dispatch_workers_parallel") as mock_dispatch, \
              patch("scripts.orchestrate.update_map_status"):
-            mock_dispatch.return_value = MagicMock(exit_code=0)
+            mock_dispatch.return_value = [MagicMock(exit_code=0)]
             fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
             config = _make_config(fx.workspace)
             result = _run_cycle(config)
@@ -534,3 +543,67 @@ class TestAuditGateSessionCloseFailure:
         result = _handle_all_done(_make_all_done_ctx(tmp_path))
         assert result.exit_code == EXIT_ERROR
         assert result.output["detail"] == "session_close failed"
+
+
+class TestWaveCheckpointPending:
+    @patch("scripts.orchestrate.decide_action")
+    def test_sentinel_written_on_checkpoint_pending(
+        self, mock_decide: MagicMock, tmp_path: Path
+    ) -> None:
+        """WAVE_CHECKPOINT_PENDING writes .checkpoint_pending sentinel to workspace."""
+        mock_decide.return_value = Action(
+            kind=WAVE_CHECKPOINT_PENDING,
+            tasks=["task_001"],
+            detail="Wave 1 complete, requires confirmation before wave 2",
+        )
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
+        config = _make_config(fx.workspace)
+        _run_cycle(config)
+        assert (fx.workspace / CHECKPOINT_SENTINEL).exists()
+
+    @patch("scripts.orchestrate.decide_action")
+    def test_exit_waiting_on_checkpoint_pending(
+        self, mock_decide: MagicMock, tmp_path: Path
+    ) -> None:
+        """WAVE_CHECKPOINT_PENDING returns EXIT_WAITING."""
+        mock_decide.return_value = Action(
+            kind=WAVE_CHECKPOINT_PENDING,
+            tasks=["task_001"],
+            detail="Wave 1 complete, requires confirmation before wave 2",
+        )
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
+        config = _make_config(fx.workspace)
+        result = _run_cycle(config)
+        assert result.exit_code == EXIT_WAITING
+
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
+    def test_preseeded_sentinel_skips_dispatch(
+        self, mock_dispatch: MagicMock, tmp_path: Path
+    ) -> None:
+        """Pre-existing .checkpoint_pending sentinel causes zero dispatches."""
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
+        (fx.workspace / CHECKPOINT_SENTINEL).write_text("{}", encoding="utf-8")
+        config = _make_config(fx.workspace)
+        result = _run_cycle(config)
+        mock_dispatch.assert_not_called()
+        assert result.exit_code == EXIT_WAITING
+
+    @patch("scripts.orchestrate.dispatch_workers_parallel")
+    @patch("scripts.orchestrate.read_state")
+    def test_paused_session_state_skips_dispatch(
+        self, mock_read_state: MagicMock, mock_dispatch: MagicMock, tmp_path: Path
+    ) -> None:
+        """Paused session_state causes zero dispatches and returns EXIT_WAITING."""
+        from src.fsm_core.session_state import SessionState
+        mock_read_state.return_value = SessionState(
+            current_phase="execute",
+            active_wave=1,
+            pipeline_stage="workers_running",
+            last_updated="2026-04-11",
+            status="paused",
+        )
+        fx = _build_workspace(tmp_path, _WorkspaceParams(MAP_PENDING))
+        config = _make_config(fx.workspace)
+        result = _run_cycle(config)
+        mock_dispatch.assert_not_called()
+        assert result.exit_code == EXIT_WAITING

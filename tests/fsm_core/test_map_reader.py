@@ -264,6 +264,7 @@ def test_task_info_is_frozen() -> None:
         dispatch_role="fsm-executor",
         depends=[],
         wave=1,
+        requires_user_confirmation=False,
         task_path="/tmp/test.md",
     )
     with pytest.raises(AttributeError):

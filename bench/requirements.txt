@@ -1,0 +1,16 @@
+# Benchmark harness dependencies
+#
+# NOTE: This project is stdlib-only except for bench/*.
+# The bench/ directory is self-contained and includes third-party deps
+# needed for instance fetch and evaluation.
+#
+# Core dependencies (always installed):
+# — none currently; bench/prepare_instance.py uses stdlib only
+#
+# Optional dependencies for "official" SWE-bench backend:
+# Uncomment to enable official evaluation (slower, more accurate):
+# swebench>=1.0.0
+# datasets>=2.0.0
+#
+# These are NOT installed by default. Benchmark runners using
+# BENCH_EVAL_BACKEND="official" must have these pre-installed.

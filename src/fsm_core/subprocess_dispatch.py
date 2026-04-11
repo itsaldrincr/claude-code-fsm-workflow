@@ -1,3 +1,4 @@
+import concurrent.futures
 import subprocess
 from dataclasses import dataclass
 
@@ -8,10 +9,11 @@ MODEL_MAP = {
 }
 
 ADVISOR_MODEL = "opus"
-DEFAULT_TIMEOUT_SECONDS = 900
+DEFAULT_TIMEOUT_SECONDS = 1800
 CLAUDE_CMD = "claude"
 TIMEOUT_EXIT_CODE = 124
 NOT_FOUND_EXIT_CODE = 127
+MAX_PARALLEL_WORKERS: int = 8
 
 
 @dataclass
@@ -24,9 +26,9 @@ class WorkerDispatchRequest:
 
 @dataclass
 class AdvisorDispatchRequest:
-    """Request to dispatch an advisor review."""
+    """Request to dispatch an advisor review across a wave batch."""
 
-    task_path: str
+    task_paths: list[str]
 
 
 @dataclass
@@ -51,21 +53,52 @@ def _build_worker_prompt(task_path: str) -> str:
     """Return the standard worker dispatch prompt template."""
     return f"""Execute task file: {task_path}
 
-This task file is self-contained. Read it, follow its Protocol, write code per its Program steps, update Registers with nonce proof, set state to DONE on success."""
+This task file is self-contained. Read it in full, then follow its Program steps exactly.
+
+HARD REQUIREMENTS — violations count as task failure:
+
+1. REAL TOOL CALLS ONLY. Every file in the task's `## Files` Creates: and Modifies: sections must be produced via actual Write or Edit tool invocations. Do NOT generate code as response text without calling the tool — the advisor verifies files on disk, not in your response. If a Write call is blocked or errors, STOP and report the error — do not claim success.
+
+2. VERIFY BEFORE MARKING DONE. Before you update the task file's state field, use Read or a Bash `ls`/`cat` to confirm every Creates: path exists and every Modifies: path contains your change. If any file is missing or unchanged, the task is NOT done.
+
+3. FLIP ACCEPTANCE CRITERIA BOXES. When marking the task DONE, flip every `- [ ]` in the `## Acceptance Criteria` section to `- [x]`. An unchecked box on a DONE task counts as an incomplete run — the audit will catch it.
+
+4. NONCE PROOF IN REGISTERS. Update the task file's `## Registers` section with proof you read the file: include the current `checkpoint:` value from the frontmatter, a one-line summary of what was created/modified, and (if needed) the new nonce you generated for the next agent.
+
+5. STATE TRANSITION. Only after steps 1–4 are complete, change the frontmatter `state:` field from PENDING (or current) to DONE. Workers cascade within a wave — you do not need to wait on an advisor to enter DONE; wave-gate review happens at the wave boundary.
+
+6. DO NOT READ MAP.md OR CLAUDE.md. Your task file is self-contained. Hooks will block these reads — if you need a path or convention, it is already listed in the task file's `## Files` section.
+
+7. REVISE AWARENESS. Read the task file's `## Registers` section. If it contains `REVISE round N` entries, the advisor previously rejected this task — the entries explain what was wrong. Address that feedback specifically before re-executing. A REVISE round N entry means you've already failed N-1 times; round 3+ triggers BLOCKED escalation, so fix the actual issue this round, don't just retry."""
 
 
-def _build_advisor_prompt(task_path: str) -> str:
-    """Return the advisor dispatch prompt template."""
-    return f"""Review task file: {task_path}
+_ADVISOR_PROMPT_TEMPLATE = """Review the following wave batch as ONE review pass. Each task file is self-contained.
 
-Read the task file and every file listed in its ## Files section (both Creates and Modifies paths).
-Evaluate against the task's Acceptance Criteria and the project's coding discipline (CLAUDE.md).
+Task files in this wave:
+{task_list}
 
-Return your verdict as the FIRST LINE of your response:
-APPROVE - if all acceptance criteria are met and coding discipline is followed.
-REVISE - if issues were found.
+For EACH task file:
+1. Read the task file.
+2. Read every file listed in its ## Files section (both Creates and Modifies paths).
+3. Evaluate that task against its Acceptance Criteria AND the project's coding discipline (functions ≤2 params, ≤20 lines, classes ≤3 public methods, type hints, no magic numbers, no swallowed exceptions).
+4. Verify the task's state field is DONE and every acceptance checkbox is flipped to [x].
 
-If REVISE, list each issue and corrective guidance below the verdict line."""
+Return your verdict on the FIRST LINE of your response, applied to the WHOLE batch:
+APPROVE - every task in the batch meets all criteria and discipline.
+REVISE - at least one task has an issue.
+
+If REVISE, the SECOND LINE of your response MUST be exactly:
+FAILING TASKS: task_NNNa, task_NNNb, ...
+
+List ONLY the task_ids that actually have issues — do NOT list passing tasks. The orchestrator parses this line to decide which tasks to re-dispatch. If you list every reviewed task, the entire wave reruns unnecessarily and wastes tokens.
+
+Below the FAILING TASKS line, give per-task issue details keyed by task_id (e.g., "## task_814a: function X exceeds 20 lines")."""
+
+
+def _build_advisor_prompt(task_paths: list[str]) -> str:
+    """Return the wave-batch advisor prompt template."""
+    task_list = "\n".join(f"- {p}" for p in task_paths)
+    return _ADVISOR_PROMPT_TEMPLATE.format(task_list=task_list)
 
 
 def _build_revise_prompt(request: ReviseDispatchRequest) -> str:
@@ -117,7 +150,7 @@ def _success_result(result: subprocess.CompletedProcess) -> DispatchResult:
 
 def _run_claude(prompt: str, model: str) -> DispatchResult:
     """Execute claude CLI with given prompt and model."""
-    cmd = [CLAUDE_CMD, "-p", prompt, "--model", model]
+    cmd = [CLAUDE_CMD, "-p", prompt, "--model", model, "--permission-mode", "bypassPermissions"]
     try:
         result = subprocess.run(
             cmd,
@@ -141,9 +174,25 @@ def dispatch_worker(request: WorkerDispatchRequest) -> DispatchResult:
     return _run_claude(prompt, model)
 
 
+def dispatch_workers_parallel(requests: list[WorkerDispatchRequest]) -> list[DispatchResult]:
+    """Dispatch multiple worker tasks in parallel, return results in request order.
+
+    Uses ThreadPoolExecutor bounded by MAX_PARALLEL_WORKERS. Each submitted task
+    calls dispatch_worker which spawns its own `claude -p` subprocess. Python's
+    GIL is released while subprocess children execute, so concurrency is real
+    wall-clock parallelism. Returns list of DispatchResult in the same order as
+    the input requests.
+    """
+    if not requests:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+        futures = [executor.submit(dispatch_worker, req) for req in requests]
+        return [f.result() for f in futures]
+
+
 def dispatch_advisor(request: AdvisorDispatchRequest) -> DispatchResult:
-    """Dispatch an advisor review (always Opus)."""
-    prompt = _build_advisor_prompt(request.task_path)
+    """Dispatch a wave-batch advisor review (always Opus)."""
+    prompt = _build_advisor_prompt(request.task_paths)
     return _run_claude(prompt, ADVISOR_MODEL)
 
 

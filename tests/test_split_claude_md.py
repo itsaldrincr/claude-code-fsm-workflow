@@ -1,0 +1,35 @@
+"""Tests for split_claude_md helper."""
+
+import tempfile
+from pathlib import Path
+
+from scripts.split_claude_md import split, SplitRequest
+
+
+def test_split_matches_committed_artifacts():
+    """Invoke split in tempdir and diff output against committed artifacts."""
+    local_claude = Path('/Users/alrelador/projects/claude-harness/CLAUDE.md')
+    committed_dir = Path('/Users/alrelador/projects/claude-harness/plugins/fsm-workflow')
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_dir = Path(tmpdir)
+        request = SplitRequest(source=local_claude, output_dir=output_dir)
+        result = split(request)
+
+        assert result.slim_template.exists()
+        assert len(result.skills) == 6
+
+        for skill_path in result.skills:
+            assert skill_path.exists()
+
+        slim_template_path = committed_dir / 'templates' / 'CLAUDE.md'
+        actual_slim = result.slim_template.read_text()
+        expected_slim = slim_template_path.read_text()
+        assert actual_slim == expected_slim, "slim template does not match committed"
+
+        committed_skills_dir = committed_dir / 'skills'
+        for skill_path in result.skills:
+            committed_path = committed_skills_dir / skill_path.name
+            actual_content = skill_path.read_text()
+            expected_content = committed_path.read_text()
+            assert actual_content == expected_content, f"{skill_path.name} does not match committed"

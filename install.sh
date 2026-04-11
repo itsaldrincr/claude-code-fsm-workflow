@@ -133,6 +133,15 @@ if [ -d "$SCRIPTS_SOURCE_DIR" ]; then
     find "$SCRIPTS_TARGET_DIR" -type f -name "*.py" -exec chmod +x {} \;
 fi
 
+# ── copy skills ──────────────────────────────────────────────────────────────
+SKILLS_SOURCE_DIR="$SOURCE_DIR/plugins/fsm-workflow/skills"
+SKILLS_TARGET_DIR="$HOME/.claude/skills"
+if [ -d "$SKILLS_SOURCE_DIR" ]; then
+    mkdir -p "$SKILLS_TARGET_DIR"
+    cp "$SKILLS_SOURCE_DIR"/*.md "$SKILLS_TARGET_DIR/"
+    echo "Installed 6 skills to $SKILLS_TARGET_DIR/"
+fi
+
 # ── ensure settings.json exists ────────────────────────────────────────────────
 mkdir -p "$(dirname "$SETTINGS")"
 if [ ! -f "$SETTINGS" ]; then
@@ -221,4 +230,5 @@ echo "  agents target:    $AGENTS_TARGET_DIR/"
 echo "  commands target:  $COMMANDS_TARGET_DIR/"
 echo "  templates target: $TEMPLATES_TARGET_DIR/"
 echo "  scripts target:   $SCRIPTS_TARGET_DIR/"
+echo "  skills target:    $SKILLS_TARGET_DIR/"
 echo "  enforcement:      $ENFORCEMENT_HOOK_TARGET_DIR/{block-*,surface-*}.sh"
