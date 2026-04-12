@@ -155,14 +155,18 @@ def _build_model_tier_skill(lines: list[str], output_dir: Path) -> Path:
     return _build_skill_file(skill_spec, output_dir)
 
 
-def _assemble_slim_template(lines: list[str], output_dir: Path) -> Path:
-    """Assemble slim template referencing skills."""
-    spec = SectionSpec(lines, '# Coding Discipline SOP', '---')
-    discipline = _extract_section(spec)
+def _extract_slim_sections(lines: list[str]) -> tuple[str, str, str, str]:
+    """Extract sections needed for slim template."""
+    discipline = _extract_section(SectionSpec(lines, '# Coding Discipline SOP', '---'))
     default_behaviour = _extract_section(SectionSpec(lines, '## Default behaviour', '## Rules'))
     rules = _extract_section(SectionSpec(lines, '## Rules', '## Model Tier Defaults (Max Account)'))
     project_notes = _extract_section(SectionSpec(lines, '## Project Notes'))
-    slim_content = (
+    return discipline, default_behaviour, rules, project_notes
+
+
+def _build_slim_content(discipline: str, default_behaviour: str, rules: str, project_notes: str) -> str:
+    """Build the slim template markdown content."""
+    return (
         f"{discipline}\n\n"
         "---\n\n"
         "## Task Coordination\n\n"
@@ -192,6 +196,12 @@ def _assemble_slim_template(lines: list[str], output_dir: Path) -> Path:
         "- [fsm-hook-enforcement](/skills/fsm-hook-enforcement.md) — Hook system\n"
         "- [model-tier-routing](/skills/model-tier-routing.md) — Model tier assignments\n"
     )
+
+
+def _assemble_slim_template(lines: list[str], output_dir: Path) -> Path:
+    """Assemble slim template referencing skills."""
+    discipline, default_behaviour, rules, project_notes = _extract_slim_sections(lines)
+    slim_content = _build_slim_content(discipline, default_behaviour, rules, project_notes)
     path = output_dir / 'CLAUDE.md'
     path.write_text(slim_content)
     return path

@@ -26,7 +26,7 @@ class TaskStatus:
     dispatch_role: str
     depends: list[str]
     wave: int = 0
-    requires_user_confirmation: bool = False
+    has_user_confirmation: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,7 @@ def _checkpoint_for_wave(wave: int, tasks: list[TaskStatus]) -> Action | None:
     """Return a checkpoint Action for a single wave if it is DONE and confirmation-required."""
     if not all(t.status == "DONE" for t in tasks):
         return None
-    if not any(t.requires_user_confirmation for t in tasks):
+    if not any(t.has_user_confirmation for t in tasks):
         return None
     task_ids = [t.task_id for t in tasks]
     detail = f"Wave {wave} complete, requires confirmation before wave {wave + 1}"

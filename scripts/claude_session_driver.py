@@ -6,7 +6,11 @@ import logging
 import sys
 from pathlib import Path
 
-from src.fsm_core.claude_session_backend import read_pending_intents, write_result_for_intent
+from src.fsm_core.claude_session_backend import (
+    ResultPayload,
+    read_pending_intents,
+    write_result_for_intent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,29 @@ def _emit(payload: dict[str, object]) -> None:
     sys.stdout.write(json.dumps(payload) + "\n")
 
 
+def _handle_list_pending(workspace: Path) -> int:
+    """Handle --list-pending action."""
+    pending = read_pending_intents(workspace)
+    _emit({"action": "list_pending", "count": len(pending), "intents": pending})
+    return 0
+
+
+def _handle_write_result(args: argparse.Namespace, workspace: Path) -> int:
+    """Handle --write-result action."""
+    if not args.intent_id:
+        _emit({"action": "write_result", "error": "--intent-id is required"})
+        return 2
+    payload = ResultPayload(
+        intent_id=args.intent_id,
+        exit_code=args.exit_code,
+        stdout=args.stdout,
+        stderr=args.stderr,
+    )
+    path = write_result_for_intent(workspace=workspace, payload=payload)
+    _emit({"action": "write_result", "intent_id": args.intent_id, "result_path": str(path)})
+    return 0
+
+
 def main() -> int:
     """List pending intents or write one result envelope."""
     logging.basicConfig(
@@ -40,21 +67,8 @@ def main() -> int:
     workspace = Path(args.workspace)
     try:
         if args.list_pending or not args.write_result:
-            pending = read_pending_intents(workspace)
-            _emit({"action": "list_pending", "count": len(pending), "intents": pending})
-            return 0
-        if not args.intent_id:
-            _emit({"action": "write_result", "error": "--intent-id is required"})
-            return 2
-        path = write_result_for_intent(
-            workspace=workspace,
-            intent_id=args.intent_id,
-            exit_code=args.exit_code,
-            stdout=args.stdout,
-            stderr=args.stderr,
-        )
-        _emit({"action": "write_result", "intent_id": args.intent_id, "result_path": str(path)})
-        return 0
+            return _handle_list_pending(workspace)
+        return _handle_write_result(args, workspace)
     except Exception as exc:
         logger.error("claude_session driver failed: %s", exc)
         _emit({"action": "claude_session_driver", "error": str(exc)})

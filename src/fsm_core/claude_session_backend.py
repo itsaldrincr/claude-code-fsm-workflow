@@ -35,6 +35,15 @@ class WorkerIntentEnvelope:
 
 
 @dataclass(frozen=True)
+class AdvisorScannerConfig:
+    """Configuration for advisor scanner pair assignment."""
+
+    pair_key: str = ""
+    scanner_index: int = 0
+    scanner_total: int = 1
+
+
+@dataclass(frozen=True)
 class AdvisorIntentEnvelope:
     """Serialized dispatch intent for one wave-gate review run."""
 
@@ -46,6 +55,16 @@ class AdvisorIntentEnvelope:
     pair_key: str = ""
     scanner_index: int = 0
     scanner_total: int = 1
+
+
+@dataclass(frozen=True)
+class ResultPayload:
+    """Parameters for writing a result envelope."""
+
+    intent_id: str
+    exit_code: int
+    stdout: str
+    stderr: str
 
 
 @dataclass(frozen=True)
@@ -123,23 +142,25 @@ def enqueue_worker_intents(workspace: Path, requests: list[WorkerDispatchRequest
     return intents
 
 
-def enqueue_advisor_intent(
-    workspace: Path,
-    request: AdvisorDispatchRequest,
-    pair_key: str = "",
-    scanner_index: int = 0,
-    scanner_total: int = 1,
-) -> AdvisorIntentEnvelope:
+@dataclass(frozen=True)
+class AdvisorIntentRequest:
+    """Bundled request for persisting one advisor review intent."""
+
+    request: AdvisorDispatchRequest
+    scanner_config: AdvisorScannerConfig = AdvisorScannerConfig()
+
+
+def enqueue_advisor_intent(workspace: Path, intent_req: AdvisorIntentRequest) -> AdvisorIntentEnvelope:
     """Persist one review intent."""
     intents_dir, _, _ = _ensure_dirs(workspace)
     envelope = AdvisorIntentEnvelope(
         schema_version=INTENT_SCHEMA_VERSION,
         intent_id=f"intent_{uuid.uuid4().hex}",
         kind="advisor",
-        task_paths=tuple(str(Path(p).resolve()) for p in request.task_paths),
-        pair_key=pair_key,
-        scanner_index=scanner_index,
-        scanner_total=scanner_total,
+        task_paths=tuple(str(Path(p).resolve()) for p in intent_req.request.task_paths),
+        pair_key=intent_req.scanner_config.pair_key,
+        scanner_index=intent_req.scanner_config.scanner_index,
+        scanner_total=intent_req.scanner_config.scanner_total,
         created_at=_utc_now(),
     )
     _write_json(_intent_path(intents_dir, envelope.intent_id), asdict(envelope))
@@ -178,32 +199,25 @@ def read_pending_intents(workspace: Path) -> list[dict[str, Any]]:
     return pending
 
 
-def write_result_for_intent(
-    workspace: Path,
-    intent_id: str,
-    exit_code: int,
-    stdout: str,
-    stderr: str,
-) -> Path:
-    """Write a result envelope for an existing intent and return result path."""
-    intents_dir, results_dir, _ = _ensure_dirs(workspace)
-    intent_path = _intent_path(intents_dir, intent_id)
-    if not intent_path.exists():
-        raise FileNotFoundError(f"Intent not found: {intent_id}")
-    intent = json.loads(intent_path.read_text(encoding="utf-8"))
-    kind = str(intent.get("kind", ""))
-    payload: dict[str, Any] = {
+def _base_result_fields(payload_params: ResultPayload) -> dict[str, Any]:
+    """Build the common fields for a result envelope."""
+    return {
         "schema_version": RESULT_SCHEMA_VERSION,
-        "intent_id": intent_id,
-        "kind": kind,
-        "exit_code": int(exit_code),
-        "stdout_summary": _summary(stdout),
-        "stderr_summary": _summary(stderr),
-        "stdout": stdout,
-        "stderr": stderr,
+        "intent_id": payload_params.intent_id,
+        "exit_code": int(payload_params.exit_code),
+        "stdout_summary": _summary(payload_params.stdout),
+        "stderr_summary": _summary(payload_params.stderr),
+        "stdout": payload_params.stdout,
+        "stderr": payload_params.stderr,
         "created_at": _utc_now(),
         "completed_at": _utc_now(),
     }
+
+
+def _build_result_payload(intent: dict[str, Any], payload_params: ResultPayload) -> dict[str, Any]:
+    """Build result payload dict from intent and parameters."""
+    kind = str(intent.get("kind", ""))
+    payload = {**_base_result_fields(payload_params), "kind": kind}
     if kind in ("worker", "revise"):
         payload["task_path"] = str(intent.get("task_path", ""))
         payload["dispatch_role"] = str(intent.get("dispatch_role", ""))
@@ -212,9 +226,41 @@ def write_result_for_intent(
         payload["pair_key"] = str(intent.get("pair_key", ""))
         payload["scanner_index"] = int(intent.get("scanner_index", 0))
         payload["scanner_total"] = int(intent.get("scanner_total", 1))
-    path = _result_path(results_dir, intent_id)
-    _write_json(path, payload)
+    return payload
+
+
+def write_result_for_intent(
+    workspace: Path,
+    payload: ResultPayload,
+) -> Path:
+    """Write a result envelope for an existing intent and return result path."""
+    intents_dir, results_dir, _ = _ensure_dirs(workspace)
+    intent_path = _intent_path(intents_dir, payload.intent_id)
+    if not intent_path.exists():
+        raise FileNotFoundError(f"Intent not found: {payload.intent_id}")
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    result_payload = _build_result_payload(intent, payload)
+    path = _result_path(results_dir, payload.intent_id)
+    _write_json(path, result_payload)
     return path
+
+
+def _parse_pending_result(path: Path, data: dict[str, Any]) -> PendingResult:
+    """Parse one result file into a PendingResult."""
+    return PendingResult(
+        result_path=path,
+        intent_id=str(data.get("intent_id", "")),
+        kind=str(data.get("kind", "")),
+        exit_code=int(data.get("exit_code", 1)),
+        stdout=str(data.get("stdout", "")),
+        stderr=str(data.get("stderr", "")),
+        task_path=str(data.get("task_path", "")),
+        dispatch_role=str(data.get("dispatch_role", "")),
+        task_paths=tuple(str(p) for p in data.get("task_paths", [])),
+        pair_key=str(data.get("pair_key", "")),
+        scanner_index=int(data.get("scanner_index", 0)),
+        scanner_total=int(data.get("scanner_total", 1)),
+    )
 
 
 def read_pending_results(workspace: Path) -> list[PendingResult]:
@@ -223,22 +269,7 @@ def read_pending_results(workspace: Path) -> list[PendingResult]:
     pending: list[PendingResult] = []
     for path in sorted(results_dir.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        pending.append(
-            PendingResult(
-                result_path=path,
-                intent_id=str(data.get("intent_id", "")),
-                kind=str(data.get("kind", "")),
-                exit_code=int(data.get("exit_code", 1)),
-                stdout=str(data.get("stdout", "")),
-                stderr=str(data.get("stderr", "")),
-                task_path=str(data.get("task_path", "")),
-                dispatch_role=str(data.get("dispatch_role", "")),
-                task_paths=tuple(str(p) for p in data.get("task_paths", [])),
-                pair_key=str(data.get("pair_key", "")),
-                scanner_index=int(data.get("scanner_index", 0)),
-                scanner_total=int(data.get("scanner_total", 1)),
-            )
-        )
+        pending.append(_parse_pending_result(path, data))
     return pending
 
 
@@ -258,7 +289,7 @@ def dispatch_workers_parallel(workspace: Path, requests: list[WorkerDispatchRequ
 
 def dispatch_advisor(workspace: Path, request: AdvisorDispatchRequest) -> DispatchResult:
     """Compatibility wrapper: enqueue advisor intent and return queued status."""
-    intent = enqueue_advisor_intent(workspace, request)
+    intent = enqueue_advisor_intent(workspace, AdvisorIntentRequest(request=request))
     return DispatchResult(exit_code=QUEUED_EXIT_CODE, stdout=intent.intent_id, stderr="queued")
 
 

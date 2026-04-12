@@ -79,15 +79,19 @@ def _extract_task_id(filename: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _parse_status_line(filename: str, status: str) -> tuple[str, str] | None:
+    """Parse one status line. Return (task_id, status) or None if invalid."""
+    task_id = _extract_task_id(filename)
+    if not task_id:
+        return None
+    if status not in VALID_STATUSES:
+        logger.warning("Unrecognized status %r for %s — skipping", status, task_id)
+        return None
+    return task_id, status
+
+
 def read_map_statuses(request: ReadStatusesRequest) -> dict[str, str]:
-    """Parse MAP.md and return dict mapping task_id to status string.
-
-    Reads lines matching [task_id_...] ... STATUS under map_lock.
-    Extracts task_id from bracket content, e.g. [task_801_foo.md] yields task_801.
-
-    Raises:
-        FileNotFoundError: map_path does not exist.
-    """
+    """Parse MAP.md under lock and return {task_id: status} dict."""
     if not request.map_path.exists():
         raise FileNotFoundError(f"MAP.md not found at {request.map_path}")
     statuses: dict[str, str] = {}
@@ -97,10 +101,8 @@ def read_map_statuses(request: ReadStatusesRequest) -> dict[str, str]:
         for match in re.finditer(pattern, content):
             filename = match.group(1)
             status = match.group(3)
-            task_id = _extract_task_id(filename)
-            if task_id:
-                if status not in VALID_STATUSES:
-                    logger.warning("Unrecognized status %r for %s — skipping", status, task_id)
-                    continue
-                statuses[task_id] = status
+            result = _parse_status_line(filename, status)
+            if result:
+                task_id, valid_status = result
+                statuses[task_id] = valid_status
     return statuses

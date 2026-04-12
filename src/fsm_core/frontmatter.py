@@ -23,7 +23,7 @@ class TaskFrontmatter:
     checkpoint: str
     created: str
     parent: str = ""
-    requires_user_confirmation: bool = False
+    has_user_confirmation: bool = False
     atomize: str = "optional"
 
 
@@ -91,6 +91,6 @@ def parse_frontmatter(content: str) -> TaskFrontmatter:
         checkpoint=fields["checkpoint"],
         created=fields["created"],
         parent=fields.get("parent", ""),
-        requires_user_confirmation=_parse_bool(fields.get("requires_user_confirmation", "")),
+        has_user_confirmation=_parse_bool(fields.get("requires_user_confirmation", "")),
         atomize=fields.get("atomize", "optional"),
     )

@@ -37,6 +37,8 @@ from src.fsm_core.map_reader import ReadTasksRequest, TaskInfo, read_task_dispat
 from src.fsm_core.session_state import read_state
 from src.fsm_core.auto_heal import heal_stale_in_progress
 from src.fsm_core.claude_session_backend import (
+    AdvisorIntentRequest,
+    AdvisorScannerConfig,
     enqueue_advisor_intent,
     enqueue_worker_intents,
     mark_result_applied,
@@ -94,8 +96,8 @@ class OrchestrateConfig:
     workspace: Path
     is_dry_run: bool
     dispatch_mode: str = app_config.DISPATCH_MODE
-    sync_task_state_to_map: bool = False
-    strict_map_task_state: bool = False
+    should_sync_task_state: bool = False
+    should_strict_map_check: bool = False
 
 
 @dataclass
@@ -142,22 +144,66 @@ class CheckpointPayload:
     summary: str
 
 
+@dataclass(frozen=True)
+class RestoreUnflaggedInput:
+    """Input for _restore_unflagged_to_review."""
+
+    wave_task_ids: list[str]
+    targets: set[str]
+
+
+@dataclass(frozen=True)
+class WorkerResultInput:
+    """Input for _apply_worker_result."""
+
+    task_path: str
+    exit_code: int
+
+
+@dataclass(frozen=True)
+class AdvisorResultInput:
+    """Input for _apply_advisor_result."""
+
+    task_paths: tuple[str, ...]
+    exit_code: int
+    stdout: str
+
+
+@dataclass(frozen=True)
+class PendingSessionResultsInput:
+    """Input for _apply_pending_claude_session_results."""
+
+    config: OrchestrateConfig
+    map_path: Path
+    tasks: list[TaskInfo]
+
+
+@dataclass(frozen=True)
+class WaveReviseContext:
+    """Bundled context for a wave-batch REVISE decision."""
+
+    wave_task_ids: list[str]
+    guidance: str
+
+
+def _build_config_from_args(args: argparse.Namespace) -> OrchestrateConfig:
+    """Build OrchestrateConfig from parsed CLI arguments."""
+    return OrchestrateConfig(
+        workspace=Path(args.workspace),
+        is_dry_run=args.dry_run,
+        dispatch_mode=resolve_dispatch_mode(args.dispatch_mode),
+        should_sync_task_state=args.sync_task_state_to_map,
+        should_strict_map_check=args.strict_map_task_state,
+    )
+
+
 def main() -> int:
     """Parse args, run one orchestration cycle, print JSON, return exit code."""
     logging.basicConfig(
-        stream=sys.stderr,
-        level=logging.INFO,
+        stream=sys.stderr, level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    args = _parse_args()
-    dispatch_mode = resolve_dispatch_mode(args.dispatch_mode)
-    config = OrchestrateConfig(
-        workspace=Path(args.workspace),
-        is_dry_run=args.dry_run,
-        dispatch_mode=dispatch_mode,
-        sync_task_state_to_map=args.sync_task_state_to_map,
-        strict_map_task_state=args.strict_map_task_state,
-    )
+    config = _build_config_from_args(_parse_args())
     try:
         _run_startup_checks(config)
         result = _run_cycle(config)
@@ -192,6 +238,15 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _log_drifts(drifts: list) -> None:
+    """Log all state drift warnings."""
+    for drift in drifts:
+        logger.warning(
+            "State drift: %s MAP=%s task=%s (%s)",
+            drift.task_id, drift.map_status, drift.task_state, drift.task_path,
+        )
+
+
 def _run_startup_checks(config: OrchestrateConfig) -> None:
     """Run startup preflight and reconciliation checks."""
     map_path = config.workspace / "MAP.md"
@@ -201,21 +256,14 @@ def _run_startup_checks(config: OrchestrateConfig) -> None:
     for task_id in healed:
         logger.warning("Auto-healed stale IN_PROGRESS task: %s", task_id)
     drifts = find_state_drifts(config.workspace, map_path)
-    if drifts and config.sync_task_state_to_map:
+    if drifts and config.should_sync_task_state:
         changed = sync_task_states_to_map(drifts)
         logger.warning("Synced %d task file state field(s) to MAP.md statuses.", changed)
         drifts = find_state_drifts(config.workspace, map_path)
     if not drifts:
         return
-    for drift in drifts:
-        logger.warning(
-            "State drift: %s MAP=%s task=%s (%s)",
-            drift.task_id,
-            drift.map_status,
-            drift.task_state,
-            drift.task_path,
-        )
-    if config.strict_map_task_state:
+    _log_drifts(drifts)
+    if config.should_strict_map_check:
         raise RuntimeError("MAP/task state drift detected. Re-run with --sync-task-state-to-map.")
 
 
@@ -234,10 +282,10 @@ def _build_pipeline_state(tasks: list[TaskInfo]) -> PipelineState:
     return PipelineState(tasks=statuses)
 
 
-def _restore_unflagged_to_review(wave_task_ids: list[str], targets: set[str], ctx: CycleContext) -> None:
+def _restore_unflagged_to_review(input_data: RestoreUnflaggedInput, ctx: CycleContext) -> None:
     """Move non-targeted EXECUTING tasks back to REVIEW after wave-gate REVISE."""
-    for task_id in wave_task_ids:
-        if task_id in targets:
+    for task_id in input_data.wave_task_ids:
+        if task_id in input_data.targets:
             continue
         info = ctx.task_lookup.get(task_id)
         if info is None:
@@ -246,94 +294,122 @@ def _restore_unflagged_to_review(wave_task_ids: list[str], targets: set[str], ct
             update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
 
 
-def _apply_worker_result(result_task_path: str, exit_code: int, ctx: CycleContext) -> bool:
+def _apply_worker_result(input_data: WorkerResultInput, ctx: CycleContext) -> bool:
     """Apply one worker result to MAP.md. Returns True if matched/applied."""
     path_to_id = {
         str(Path(info.task_path).resolve()): info.task_id
         for info in ctx.task_lookup.values()
         if info.status == "IN_PROGRESS"
     }
-    task_id = path_to_id.get(str(Path(result_task_path).resolve()))
+    task_id = path_to_id.get(str(Path(input_data.task_path).resolve()))
     if task_id is None:
         return False
-    status = "REVIEW" if exit_code == 0 else "FAILED"
+    status = "REVIEW" if input_data.exit_code == 0 else "FAILED"
     update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status=status))
     return True
 
 
-def _apply_advisor_result(task_paths: tuple[str, ...], exit_code: int, stdout: str, ctx: CycleContext) -> bool:
+@dataclass(frozen=True)
+class WaveStatusFlip:
+    """Bundled (task_ids, status) for a bulk MAP.md status update."""
+
+    task_ids: list[str]
+    status: str
+
+
+def _mark_wave_tasks_status(flip: WaveStatusFlip, ctx: CycleContext) -> None:
+    """Mark all task_ids with the given status."""
+    for task_id in flip.task_ids:
+        update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status=flip.status))
+
+
+def _apply_revise_verdict(rctx: WaveReviseContext, ctx: CycleContext) -> None:
+    """Handle a REVISE verdict: restore unflagged, then dispatch revise batch."""
+    flagged = extract_flagged_task_ids(rctx.guidance, rctx.wave_task_ids)
+    targets = set(flagged if flagged else rctx.wave_task_ids)
+    _restore_unflagged_to_review(RestoreUnflaggedInput(wave_task_ids=rctx.wave_task_ids, targets=targets), ctx)
+    _revise_wave_batch(rctx, ctx)
+
+
+def _apply_advisor_result(input_data: AdvisorResultInput, ctx: CycleContext) -> bool:
     """Apply one legacy single-reviewer result to MAP.md. Returns True if matched/applied."""
     ids_by_path = {str(Path(info.task_path).resolve()): info.task_id for info in ctx.task_lookup.values()}
     wave_task_ids: list[str] = []
-    for path in task_paths:
+    for path in input_data.task_paths:
         task_id = ids_by_path.get(str(Path(path).resolve()))
         if task_id is None:
             return False
         wave_task_ids.append(task_id)
-    if exit_code != 0:
-        for task_id in wave_task_ids:
-            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
+    if input_data.exit_code != 0:
+        _mark_wave_tasks_status(WaveStatusFlip(wave_task_ids, "REVIEW"), ctx)
         return True
-    verdict = parse_advisor_output(stdout)
+    verdict = parse_advisor_output(input_data.stdout)
     if verdict.is_approve:
-        for task_id in wave_task_ids:
-            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="DONE"))
+        _mark_wave_tasks_status(WaveStatusFlip(wave_task_ids, "DONE"), ctx)
         return True
-    revise_ctx = WaveReviseContext(wave_task_ids=wave_task_ids, guidance=verdict.guidance)
-    flagged = extract_flagged_task_ids(revise_ctx.guidance, revise_ctx.wave_task_ids)
-    targets = set(flagged if flagged else revise_ctx.wave_task_ids)
-    _restore_unflagged_to_review(revise_ctx.wave_task_ids, targets, ctx)
-    _revise_wave_batch(revise_ctx, ctx)
+    _apply_revise_verdict(WaveReviseContext(wave_task_ids=wave_task_ids, guidance=verdict.guidance), ctx)
     return True
 
 
-def _apply_bug_scanner_pair_results(results: list, ctx: CycleContext) -> bool:
-    """Apply one completed bug-scanner pair result group to MAP.md."""
-    ids_by_path = {str(Path(info.task_path).resolve()): info.task_id for info in ctx.task_lookup.values()}
+def _extract_wave_task_ids_from_results(results: list, ids_by_path: dict[str, str]) -> list[str] | None:
+    """Extract unique wave task IDs from scanner results. Returns None if any path is unknown."""
     wave_task_ids: list[str] = []
     for result in results:
         for path in result.task_paths:
             task_id = ids_by_path.get(str(Path(path).resolve()))
             if task_id is None:
-                return False
+                return None
             if task_id not in wave_task_ids:
                 wave_task_ids.append(task_id)
-    if any(result.exit_code != 0 for result in results):
-        for task_id in wave_task_ids:
-            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
-        return True
-    verdicts = [parse_advisor_output(result.stdout) for result in results]
-    if all(verdict.is_approve for verdict in verdicts):
-        for task_id in wave_task_ids:
-            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="DONE"))
-        return True
+    return wave_task_ids
+
+
+def _combine_scanner_guidance(verdicts: list) -> str:
+    """Combine non-approve guidance from all verdicts."""
     guidance_parts = [verdict.guidance for verdict in verdicts if not verdict.is_approve and verdict.guidance]
-    combined_guidance = "\n\n".join(guidance_parts).strip() or "bug-scanner issues"
+    return "\n\n".join(guidance_parts).strip() or "bug-scanner issues"
+
+
+def _extract_flagged_from_verdicts(verdicts: list, wave_task_ids: list[str]) -> set[str]:
+    """Extract flagged task IDs from non-approve verdicts."""
     flagged: set[str] = set()
     for verdict in verdicts:
         if verdict.is_approve:
             continue
         flagged.update(extract_flagged_task_ids(verdict.guidance, wave_task_ids))
+    return flagged
+
+
+def _apply_bug_scanner_pair_results(results: list, ctx: CycleContext) -> bool:
+    """Apply one completed bug-scanner pair result group to MAP.md."""
+    ids_by_path = {str(Path(info.task_path).resolve()): info.task_id for info in ctx.task_lookup.values()}
+    wave_task_ids = _extract_wave_task_ids_from_results(results, ids_by_path)
+    if wave_task_ids is None:
+        return False
+    if any(result.exit_code != 0 for result in results):
+        _mark_wave_tasks_status(WaveStatusFlip(wave_task_ids, "REVIEW"), ctx)
+        return True
+    verdicts = [parse_advisor_output(result.stdout) for result in results]
+    if all(verdict.is_approve for verdict in verdicts):
+        _mark_wave_tasks_status(WaveStatusFlip(wave_task_ids, "DONE"), ctx)
+        return True
+    combined_guidance = _combine_scanner_guidance(verdicts)
+    flagged = _extract_flagged_from_verdicts(verdicts, wave_task_ids)
     targets = flagged if flagged else set(wave_task_ids)
-    _restore_unflagged_to_review(wave_task_ids, targets, ctx)
+    restore_input = RestoreUnflaggedInput(wave_task_ids=wave_task_ids, targets=targets)
+    _restore_unflagged_to_review(restore_input, ctx)
     _revise_wave_batch(WaveReviseContext(wave_task_ids=wave_task_ids, guidance=combined_guidance), ctx)
     return True
 
 
-def _apply_pending_claude_session_results(config: OrchestrateConfig, map_path: Path, tasks: list[TaskInfo]) -> int:
-    """Apply pending .fsm-results envelopes into MAP state transitions."""
-    if config.is_dry_run:
-        return 0
-    ctx = CycleContext(config=config, map_path=map_path, task_lookup={t.task_id: t for t in tasks})
+def _apply_single_results(pending: list, ctx: CycleContext) -> tuple[int, dict[str, list]]:
+    """Apply worker/advisor results, collect pair groups. Returns (applied_count, pair_groups)."""
     applied = 0
-    pending_results = read_pending_results(config.workspace)
     pair_groups: dict[str, list] = {}
-    for result in pending_results:
-        matched = False
+    for result in pending:
         if result.kind in ("worker", "revise"):
-            matched = _apply_worker_result(result.task_path, result.exit_code, ctx)
-            if matched:
-                mark_result_applied(config.workspace, result.result_path)
+            if _apply_worker_result(WorkerResultInput(task_path=result.task_path, exit_code=result.exit_code), ctx):
+                mark_result_applied(ctx.config.workspace, result.result_path)
                 applied += 1
             continue
         if result.kind != "advisor":
@@ -341,20 +417,36 @@ def _apply_pending_claude_session_results(config: OrchestrateConfig, map_path: P
         if result.pair_key:
             pair_groups.setdefault(result.pair_key, []).append(result)
             continue
-        matched = _apply_advisor_result(result.task_paths, result.exit_code, result.stdout, ctx)
-        if matched:
-            mark_result_applied(config.workspace, result.result_path)
+        if _apply_advisor_result(AdvisorResultInput(task_paths=result.task_paths, exit_code=result.exit_code, stdout=result.stdout), ctx):
+            mark_result_applied(ctx.config.workspace, result.result_path)
             applied += 1
+    return applied, pair_groups
+
+
+def _apply_pair_groups(pair_groups: dict[str, list], ctx: CycleContext) -> int:
+    """Apply completed bug-scanner pair groups. Returns count of applied results."""
+    applied = 0
     for grouped in pair_groups.values():
-        expected = max(result.scanner_total for result in grouped)
+        expected = max(r.scanner_total for r in grouped)
         if len(grouped) < expected:
             continue
         selected = sorted(grouped, key=lambda item: item.scanner_index)[:expected]
         if not _apply_bug_scanner_pair_results(selected, ctx):
             continue
         for result in selected:
-            mark_result_applied(config.workspace, result.result_path)
+            mark_result_applied(ctx.config.workspace, result.result_path)
             applied += 1
+    return applied
+
+
+def _apply_pending_claude_session_results(input_data: PendingSessionResultsInput) -> int:
+    """Apply pending .fsm-results envelopes into MAP state transitions."""
+    if input_data.config.is_dry_run:
+        return 0
+    ctx = CycleContext(config=input_data.config, map_path=input_data.map_path, task_lookup={t.task_id: t for t in input_data.tasks})
+    pending = read_pending_results(input_data.config.workspace)
+    applied, pair_groups = _apply_single_results(pending, ctx)
+    applied += _apply_pair_groups(pair_groups, ctx)
     return applied
 
 
@@ -370,6 +462,18 @@ def _should_skip_dispatch(workspace: Path) -> bool:
     return session_state.checkpoints_skipped_this_session
 
 
+def _read_and_apply_results(config: OrchestrateConfig, map_path: Path) -> list[TaskInfo]:
+    """Read tasks, apply pending results, re-read if any applied."""
+    request = ReadTasksRequest(workspace=config.workspace, map_path=map_path)
+    tasks = read_task_dispatch_info(request)
+    results_input = PendingSessionResultsInput(config=config, map_path=map_path, tasks=tasks)
+    applied = _apply_pending_claude_session_results(results_input)
+    if applied > 0:
+        logger.info("Applied %d claude_session result envelope(s).", applied)
+        tasks = read_task_dispatch_info(request)
+    return tasks
+
+
 def _run_cycle(config: OrchestrateConfig) -> ActionResult:
     """Read pipeline state, decide action, execute it, return result."""
     map_path = config.workspace / "MAP.md"
@@ -378,16 +482,10 @@ def _run_cycle(config: OrchestrateConfig) -> ActionResult:
     if _should_skip_dispatch(config.workspace):
         return ActionResult(EXIT_WAITING, {"action": "waiting", "tasks": [], "detail": "dispatch skipped"})
     try:
-        request = ReadTasksRequest(workspace=config.workspace, map_path=map_path)
-        tasks = read_task_dispatch_info(request)
+        tasks = _read_and_apply_results(config, map_path)
     except (FileNotFoundError, LockTimeoutError) as exc:
         return ActionResult(EXIT_ERROR, {"action": "error", "tasks": [], "detail": str(exc)})
-    applied_results = _apply_pending_claude_session_results(config, map_path, tasks)
-    if applied_results > 0:
-        logger.info("Applied %d claude_session result envelope(s).", applied_results)
-        tasks = read_task_dispatch_info(request)
-    state = _build_pipeline_state(tasks)
-    action = decide_action(state)
+    action = decide_action(_build_pipeline_state(tasks))
     if _should_skip_dispatch(config.workspace):
         return ActionResult(EXIT_WAITING, {"action": "waiting", "tasks": [], "detail": "dispatch skipped (re-check)"})
     ctx = CycleContext(config=config, map_path=map_path, task_lookup={t.task_id: t for t in tasks})
@@ -614,6 +712,35 @@ def _build_pair_key(task_ids: list[str]) -> str:
     return f"pair:{stable}"
 
 
+@dataclass(frozen=True)
+class ScannerShardRequest:
+    """Bundled request for enqueueing one bug-scanner shard."""
+
+    workspace: Path
+    task_paths: list[str]
+    pair_key: str
+    index: int
+
+
+def _enqueue_scanner_shard(request: ScannerShardRequest) -> str:
+    """Enqueue one bug-scanner shard and return intent ID."""
+    intent_req = AdvisorIntentRequest(
+        request=AdvisorDispatchRequest(task_paths=request.task_paths),
+        scanner_config=AdvisorScannerConfig(
+            pair_key=request.pair_key, scanner_index=request.index, scanner_total=BUG_SCANNER_PAIR_SIZE,
+        ),
+    )
+    return enqueue_advisor_intent(request.workspace, intent_req)
+
+
+def _enqueue_scanner_pair(request: ScannerShardRequest) -> list[str]:
+    """Enqueue both scanner shards and return intent IDs."""
+    shard_left, shard_right = _split_bug_scanner_shards(request.task_paths)
+    left = ScannerShardRequest(request.workspace, shard_left, request.pair_key, 0)
+    right = ScannerShardRequest(request.workspace, shard_right, request.pair_key, 1)
+    return [_enqueue_scanner_shard(left), _enqueue_scanner_shard(right)]
+
+
 def _handle_dispatch_advisor(action: Action, ctx: CycleContext) -> ActionResult:
     """Dispatch bug-scanner pair for the whole wave batch."""
     wave_task_ids = action.tasks
@@ -624,37 +751,12 @@ def _handle_dispatch_advisor(action: Action, ctx: CycleContext) -> ActionResult:
         logger.info("DRY-RUN: would dispatch bug-scanner pair for wave batch %s", wave_task_ids)
         output = {"action": "dispatch_advisor", "tasks": wave_task_ids, "detail": action.detail}
         return ActionResult(EXIT_ACTION_TAKEN, output)
-    for task_id in wave_task_ids:
-        update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="EXECUTING"))
+    _mark_wave_tasks_status(WaveStatusFlip(wave_task_ids, "EXECUTING"), ctx)
     task_paths = [ctx.task_lookup[tid].task_path for tid in wave_task_ids]
-    shard_left, shard_right = _split_bug_scanner_shards(task_paths)
     pair_key = _build_pair_key(wave_task_ids)
-    intents = [
-        enqueue_advisor_intent(
-            ctx.config.workspace,
-            AdvisorDispatchRequest(task_paths=shard_left),
-            pair_key=pair_key,
-            scanner_index=0,
-            scanner_total=BUG_SCANNER_PAIR_SIZE,
-        ),
-        enqueue_advisor_intent(
-            ctx.config.workspace,
-            AdvisorDispatchRequest(task_paths=shard_right),
-            pair_key=pair_key,
-            scanner_index=1,
-            scanner_total=BUG_SCANNER_PAIR_SIZE,
-        ),
-    ]
+    intents = _enqueue_scanner_pair(ScannerShardRequest(ctx.config.workspace, task_paths, pair_key, 0))
     detail = f"Queued {len(intents)} bug-scanner intents for {len(wave_task_ids)} task(s)"
     return ActionResult(EXIT_ACTION_TAKEN, {"action": "dispatch_advisor", "tasks": wave_task_ids, "detail": detail})
-
-
-@dataclass(frozen=True)
-class WaveReviseContext:
-    """Bundled context for a wave-batch REVISE decision."""
-
-    wave_task_ids: list[str]
-    guidance: str
 
 
 def _revise_wave_batch(rctx: WaveReviseContext, ctx: CycleContext) -> ActionResult:

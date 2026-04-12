@@ -84,38 +84,27 @@ def _release(lock_path: Path) -> None:
     try:
         lock_path.unlink()
     except FileNotFoundError:
-        pass
+        logger.debug("Lockfile already gone: %s", lock_path)
     except OSError as exc:
         logger.warning("Failed to release lockfile %s: %s", lock_path, exc)
 
 
+def _cleanup_on_exception(map_tmp_path: Path, lock_path: Path) -> None:
+    """Clean up tmp file and release lock on exception."""
+    _release(map_tmp_path)
+    _release(lock_path)
+
+
 @contextmanager
 def map_lock(map_path: Path, config: LockConfig = LockConfig()) -> Iterator[None]:
-    """Acquire an exclusive lock on map_path + '.lock'. Context manager.
-
-    On entry: repeatedly attempts os.open with O_CREAT|O_EXCL|O_WRONLY.
-    Writes the current PID into the lockfile.
-    On FileExistsError: if lockfile mtime > stale_lock_seconds, unlink and retry.
-    Otherwise sleep retry_delay_ms + jitter and retry.
-    After max_retries failures: raise LockTimeoutError.
-
-    On exit (success or exception): unlink lockfile (silent on failure).
-
-    Raises:
-        LockTimeoutError: max_retries exhausted.
-        LockAcquisitionError: unexpected OS error (e.g. permission denied).
-    """
+    """Acquire exclusive lockfile on map_path, yield, then release."""
     lock_path = Path(str(map_path) + ".lock")
-    # map_tmp_path is the atomic-write staging file used by callers (map_io.py).
-    # map_lock owns its cleanup on exception to satisfy AC1.3: no orphaned .tmp
-    # files after a crash inside the lock body. This coupling is explicitly
-    # specified in the manifest §2 clarification on Item 1 lock behavior.
     map_tmp_path = Path(str(map_path) + ".tmp")
     _acquire_with_retries(lock_path, config)
     try:
         yield
     except BaseException:
-        _release(map_tmp_path)
+        _cleanup_on_exception(map_tmp_path, lock_path)
         raise
     finally:
         _release(lock_path)

@@ -503,6 +503,16 @@ class _MapRewriteInput:
     parent_depends: list[str] | None = None
 
 
+@dataclass
+class _ProcessOneTaskInput:
+    """Input for processing a single task file for atomization."""
+
+    task_path: str
+    request: AtomizeRequest
+    rollback: "_RollbackState"
+    rewrites: dict[str, str]
+
+
 def _rewrite_map_for_parent(rewrite_input: _MapRewriteInput) -> None:
     """Rewrite MAP.md after atomizing one parent task."""
     subtask_ids = [_extract_task_id(p) for p in rewrite_input.created]
@@ -534,21 +544,21 @@ class _RollbackState:
     original_map: str | None
 
 
-def _process_one_task(task_path: str, request: AtomizeRequest, rollback: _RollbackState, rewrites: dict[str, str]) -> None:
+def _process_one_task(input_config: _ProcessOneTaskInput) -> None:
     """Process a single task file for atomization."""
-    parsed = _parse_task_file(Path(task_path))
-    rollback.parent_backups[task_path] = Path(task_path).read_text(encoding="utf-8")
-    _rewrite_parent_depends(task_path, rewrites)
+    parsed = _parse_task_file(Path(input_config.task_path))
+    input_config.rollback.parent_backups[input_config.task_path] = Path(input_config.task_path).read_text(encoding="utf-8")
+    _rewrite_parent_depends(input_config.task_path, input_config.rewrites)
     if not _should_atomize(parsed.frontmatter):
         logger.info("Task %s — skipping (atomize: %s)", parsed.frontmatter.id, parsed.frontmatter.atomize)
         return
-    parent_id = _extract_task_id(task_path)
-    parsed = _parse_task_file(Path(task_path))
-    created = atomize_task(task_path)
-    rollback.created_files.extend(created)
+    parent_id = _extract_task_id(input_config.task_path)
+    parsed = _parse_task_file(Path(input_config.task_path))
+    created = atomize_task(input_config.task_path)
+    input_config.rollback.created_files.extend(created)
     if created:
-        rewrites[parent_id] = _extract_task_id(created[-1])
-        _rewrite_map_for_parent(_MapRewriteInput(parent_id, created, request, parsed.sections, parsed.frontmatter.depends))
+        input_config.rewrites[parent_id] = _extract_task_id(created[-1])
+        _rewrite_map_for_parent(_MapRewriteInput(parent_id, created, input_config.request, parsed.sections, parsed.frontmatter.depends))
 
 
 def atomize_tasks(request: AtomizeRequest) -> None:
@@ -564,7 +574,8 @@ def atomize_tasks(request: AtomizeRequest) -> None:
     rewrites: dict[str, str] = {}
     try:
         for task_path in request.task_paths:
-            _process_one_task(task_path, request, rollback, rewrites)
+            input_config = _ProcessOneTaskInput(task_path=task_path, request=request, rollback=rollback, rewrites=rewrites)
+            _process_one_task(input_config)
     except Exception:
         _rollback_atomization(rollback)
         raise
