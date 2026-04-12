@@ -18,25 +18,24 @@ If no `CLAUDE.md` exists, dispatcher routes to `doc-writer` (pre-workflow mode).
 3. **task-planner** — consumes manifest, writes task files + MAP.md (atomic)
 4. **Atomizer** — orchestrator runs `python scripts/atomize_task.py <task_files...>` on every multi-step task. Mandatory. Splits into single-step sub-tasks for Haiku-tier execution.
 5. **Workers** — `fsm-executor` / `fsm-integrator` in waves (parallel within a wave). Sub-task chains (a→b→c) cascade freely within a wave without interruption. Orchestrator flips PENDING → IN_PROGRESS per worker dispatch.
-6. **Wave gate (advisor)** — when ALL tasks in a wave reach DONE (worker self-verified), ONE advisor (Opus) reviews the entire wave output. The advisor reads all files created/modified across all wave tasks. APPROVE → gate opens, wave N+1 starts. REVISE → targeted tasks re-dispatched, wave re-reviewed (max 3 rounds). After 3 failed rounds → BLOCKED → escalate. **Wave Checkpoint** — If any task in the completed wave carries `requires_user_confirmation: true`, `orchestrate.py` writes `.checkpoint_pending` sentinel and pauses. Next invocation is a no-op until the sentinel is deleted. Options: Approve (continue), Paused (edit session_state.json), or Skip (omit remaining confirmations this session).
+6. **Wave gate (bug-scanner pair)** — when ALL tasks in a wave reach DONE (worker self-verified), TWO bug-scanners review the wave output in parallel on deterministic shards. APPROVE requires both scanners to approve. REVISE returns the union of flagged task IDs for targeted repair dispatch (max 3 rounds). Flagged tasks route to `code-fixer` for mechanical/simple fixes and `debugger` for complex/logic fixes. After 3 failed rounds → BLOCKED → escalate. **Wave Checkpoint** — If any task in the completed wave carries `requires_user_confirmation: true`, `orchestrate.py` writes `.checkpoint_pending` sentinel and pauses. Next invocation is a no-op until the sentinel is deleted. Options: Approve (continue), Paused (edit session_state.json), or Skip (omit remaining confirmations this session).
 7. **Audit** — `audit_discipline.py` + `check_deps.py` run deterministically via subprocess (no LLM calls); `bug-scanner` LLM runs in parallel for logic checks. `orchestrate.py` gates on the `.audit_clean` sentinel file before proceeding.
 8. **Fix loops** — `code-fixer` (discipline + simple bugs) or `debugger` (test failures, complex bugs, broken imports). Max 3 rounds per loop, then ESCALATE.
 9. **test-runner** — when all auditors clean
 10. **session-closer** — when tests pass. Resets MAP.md, deletes task files.
 11. **doc-writer post-workflow** — changelog, deployment notes.
 
-### Advisor Loop (per-wave gate)
+### Wave Gate (bug-scanner pair boundary)
 
-The advisor gates wave transitions, not individual task completions. Workers cascade freely within a wave — the advisor reviews the batch at the wave boundary.
+The wave gate runs automatically when all tasks in a wave reach DONE.
 
 1. Workers execute all tasks in a wave (including sub-task chains a→b→c). Each worker self-verifies and sets its task to DONE.
-2. When ALL tasks in the wave reach DONE, `orchestrate.py` detects wave completion and dispatches ONE advisor (Opus) to review the entire wave output.
-3. Advisor reads all files created/modified across all wave tasks. Evaluates acceptance criteria and coding discipline for each task.
-4. **APPROVE** — advisor confirms the wave output meets all criteria. Gate opens. Orchestrator advances to wave N+1 (or audit if final wave).
-5. **REVISE** — advisor identifies specific tasks with issues and returns corrective guidance per task. Those tasks are re-dispatched to their original worker type with `REVISE:` prefix. Unaffected tasks remain DONE. After targeted fixes, the wave is re-reviewed.
-6. **BLOCKED** — after 3 revision rounds on the same wave, the wave enters BLOCKED state. The dispatcher escalates with options: manual fix, merge into integrator task, or skip advisor (accept risk).
+2. Orchestrator marks the completed wave as REVIEW and dispatches two bug-scanner intents for the wave batch (scanner shard 0 and shard 1).
+3. **APPROVE** — both scanners return APPROVE. Gate opens and orchestrator advances to wave N+1 (or audit if final wave).
+4. **REVISE** — one or both scanners return REVISE. Flagged tasks are computed from the union of scanner guidance, flipped REVIEW → PENDING with REVISE notes in Registers, then re-dispatched to `code-fixer` (simple/mechanical) or `debugger` (complex).
+5. **BLOCKED** — after 3 revision rounds on the same wave, the wave enters BLOCKED state. The dispatcher escalates with options: manual fix, merge into integrator task, or accept risk.
 
-One advisor call per wave boundary. No per-task or per-sub-task advisor calls.
+One gate cycle per wave boundary. No per-task or per-sub-task gate calls.
 
 ### Task Atomization
 
@@ -68,11 +67,12 @@ The orchestrator runs it in a loop. The script is stateless between invocations 
 **Streaming visibility (preferred).** When a build phase begins, the orchestrator invokes Claude Code's Monitor tool with `bash scripts/orchestrate_monitor.sh` as a persistent driver. The script loops `orchestrate.py` and emits state-count events (`[HH:MM:SS] PENDING=N REVIEW=N DONE=N`) on stdout as MAP.md changes — each line becomes a conversation event without bloating the orchestrator's context with per-worker transcripts. Fall back to plain `bash scripts/orchestrate.py` loops if Monitor is unavailable.
 
 Supporting modules in `src/fsm_core/`:
-- `action_decider.py` — priority cascade: BLOCKED → REVIEW → PENDING-ready → ALL_DONE → WAITING → ERROR
+- `action_decider.py` — priority cascade: BLOCKED → REVIEW-wave gate dispatch → WAVE_CHECKPOINT_PENDING → PENDING-ready → ALL_DONE → WAITING
 - `map_io.py` / `map_reader.py` — MAP.md status reads + atomic flips under lockfile
 - `map_lock.py` — atomic lockfile context manager
-- `subprocess_dispatch.py` — worker / advisor / REVISE dispatch via `claude` CLI subprocesses
-- `advisor_parser.py` — APPROVE/REVISE verdict parsing + REVISE round counting
+- `dispatch_router.py` — claude-session dispatch router
+- `claude_session_backend.py` — intent/result transport (`.fsm-intents/`, `.fsm-results/`) plus driver bridge
+- `advisor_parser.py` — APPROVE/REVISE verdict parsing + REVISE round counting (shared verdict grammar for bug-scanner outputs)
 - `trace.py` — JSONL event logging; `dag_waves.py` — wave computation from dep DAG
 
 ### Recovery

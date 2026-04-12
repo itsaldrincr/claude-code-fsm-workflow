@@ -5,7 +5,13 @@ from dataclasses import dataclass
 
 @dataclass
 class TaskFrontmatter:
-    """Parsed YAML frontmatter from a task file."""
+    """Parsed YAML frontmatter from a task file.
+
+    Fields:
+        atomize: str, one of "required", "optional", or "skip". Controls whether
+            the task should be atomized into single-step subtasks. Default "optional"
+            means the task passes through unchanged if it's already single-step.
+    """
 
     id: str
     name: str
@@ -18,6 +24,7 @@ class TaskFrontmatter:
     created: str
     parent: str = ""
     requires_user_confirmation: bool = False
+    atomize: str = "optional"
 
 
 def _extract_frontmatter_block(content: str) -> str:
@@ -85,4 +92,5 @@ def parse_frontmatter(content: str) -> TaskFrontmatter:
         created=fields["created"],
         parent=fields.get("parent", ""),
         requires_user_confirmation=_parse_bool(fields.get("requires_user_confirmation", "")),
+        atomize=fields.get("atomize", "optional"),
     )

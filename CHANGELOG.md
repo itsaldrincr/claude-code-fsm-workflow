@@ -18,6 +18,86 @@ Sections within each release:
 
 ---
 
+## [1.2.5] — 2026-04-12
+
+Recovery task closure + session reset. Closed the active recovery verification task wave, validated new office audit coverage, performed session cleanup (MAP.md reset + task file removal).
+
+### Changed
+
+- Clean session state after full wave completion and test pass.
+
+### Validation
+
+- All tests pass (11 files, 49 tests in visualizer suite; 466 tests in core suite).
+
+---
+
+## [1.2.4] — 2026-04-12
+
+Recovery stabilization. Dispatch runtime is now Claude-session intent/result only — legacy subprocess and SDK dispatch code removed. Wave gate runs via a required bug-scanner pair verdict. REVISE loops route flagged tasks to `code-fixer` (simple/mechanical) or `debugger` (complex/logic).
+
+### Added
+
+- **Bug-scanner pair wave gate** — two bug-scanners review wave output in parallel on deterministic file shards. Unanimous APPROVE required to open the gate. Replaces the single Opus advisor.
+- **REVISE routing heuristic** — `code-fixer` for simple hints (lint, format, imports, discipline), `debugger` for complex/logic fixes.
+- **Pair-result correlation** on `.fsm-results/`; ungate only after both scanner results arrive.
+
+### Removed
+
+- **`src/fsm_core/subprocess_dispatch.py`** — legacy subprocess dispatch runtime.
+- **`src/fsm_core/sdk_worker.py`**, **`sdk_tools.py`**, **`sdk_path_guards.py`**, **`sdk_discipline_gate.py`** — SDK dispatch modules (superseded by claude-session backend).
+- **Associated tests** for all removed modules.
+
+### Changed
+
+- **`CLAUDE.md` template** updated: bug-scanner pair wave gate, code-fixer/debugger REVISE routing, clarified kickoff path.
+- **`scripts/split_claude_md.py`** now sources `Default behaviour`, `Rules`, and `Project Notes` directly from `CLAUDE.md` to reduce drift.
+- **All 6 skill files** regenerated from the updated `CLAUDE.md`.
+
+### Validation
+
+- 466 tests pass.
+
+---
+
+## [1.2.3] — 2026-04-12
+
+Pipeline speed release. Converts `orchestrate.py` into an async event-driven daemon, replaces the single Opus wave-advisor with a three-gate pipeline (deterministic → cache → bug-scanner pair), flips atomization from mandatory to opt-in. One new third-party dep: `anthropic>=0.40`.
+
+### Added
+
+- **`src/config.py`** — central constants (DISPATCH_MODE, MODEL_MAP, HTTP pool, rate-limit, daemon poll, heartbeat, cache).
+- **10 new `src/fsm_core/` modules**: `advisor_cache.py` (content-hash verdict cache), `auto_heal.py` (startup stale-task healer), `claude_session_backend.py` (intent/result transport), `dispatch_contract.py` (dispatch dataclasses), `dispatch_router.py` (claude-session dispatch router), `orchestrate_lock.py` (lockfile context manager), `startup_checks.py` (MAP/task state drift warnings), `wave_deterministic_gate.py` (deterministic pre-gate), `worker_heartbeat.py` (atomic heartbeat writer).
+- **`scripts/claude_session_driver.py`** — intent/result driver bridge for claude-session dispatch.
+- **`requirements.txt`** — `anthropic>=0.40` (single third-party dep).
+- **`conftest.py`** — root pytest config for sys.path setup.
+- **`--daemon` flag** on `orchestrate.py` for persistent async polling loop.
+- **`--clear-advisor-cache` flag** on `orchestrate.py`.
+- **`--dry-run` flag** on `atomize_task.py`.
+- **Three-gate wave pipeline**: (1) `wave_deterministic_gate.evaluate_wave` runs audit + deps + pytest, (2) `advisor_cache.lookup_verdict` checks content-hash cache, (3) two `bug-scanner` agents on disjoint file shards.
+- **`install.sh install-deps`** subcommand for `pip install -r requirements.txt`.
+- **163 new tests** across 14 test files.
+
+### Changed
+
+- **`scripts/orchestrate.py`** — async daemon mode, three-gate wave cycle, lock acquisition, auto-heal preload, signal handlers.
+- **`scripts/orchestrate_monitor.sh`** — removed outer 20s poll loop; single `orchestrate.py --daemon` invocation.
+- **`scripts/atomize_task.py`** — atomization now opt-in (`atomize: required` only). `--dry-run` flag added.
+- **`scripts/audit_discipline.py`** — new `check_file(path)` public API; synthetic F0 on parse failure.
+- **`src/fsm_core/frontmatter.py`** — `atomize: str = "optional"` field on TaskFrontmatter.
+- **`src/fsm_core/trace.py`** — `SDK_EVENT_TYPES` constant, `build_sdk_event` helper.
+- **`src/fsm_core/session_state.py`** — `checkpoints_skipped_this_session` changed from `bool` to `list[str]` with legacy coercion.
+
+### Deprecated
+
+- `dispatch_advisor` renamed to `dispatch_bug_scanner_pair`; deprecated shim retained for v1.2.5 removal.
+
+### Validation
+
+- 590 tests pass.
+
+---
+
 ## [1.2.2] — 2026-04-12
 
 Release ergonomics + opt-in user gates + progressive disclosure. Three features ship together: optional PHASE CHECKPOINT via `AskUserQuestion`, SWE-bench Verified harness skeleton under `bench/`, and a slim downstream `CLAUDE.md` with six carved skills. Parallel worker dispatch and wave-batch advisor land alongside. Backwards compatible — pipelines with no flagged tasks behave byte-identically to v1.1.2.
@@ -237,7 +317,10 @@ Release: https://github.com/itsaldrincr/claude-code-fsm-workflow/releases/tag/v0
 
 ---
 
-[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.2.5...HEAD
+[1.2.5]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.2.4...v1.2.5
+[1.2.4]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.2.3...v1.2.4
+[1.2.3]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.2...v1.2.2
 [1.1.2]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/itsaldrincr/claude-code-fsm-workflow/compare/v1.1.0...v1.1.1

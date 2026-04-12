@@ -4,11 +4,13 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from src import config as app_config
 from src.fsm_core.action_decider import (
     ALL_DONE,
     DISPATCH_ADVISOR,
@@ -33,12 +35,21 @@ from src.fsm_core.map_io import StatusUpdateRequest, update_map_status
 from src.fsm_core.map_lock import LockTimeoutError, map_lock
 from src.fsm_core.map_reader import ReadTasksRequest, TaskInfo, read_task_dispatch_info
 from src.fsm_core.session_state import read_state
-from src.fsm_core.subprocess_dispatch import (
+from src.fsm_core.auto_heal import heal_stale_in_progress
+from src.fsm_core.claude_session_backend import (
+    enqueue_advisor_intent,
+    enqueue_worker_intents,
+    mark_result_applied,
+    read_pending_results,
+)
+from src.fsm_core.startup_checks import (
+    find_state_drifts,
+    resolve_dispatch_mode,
+    sync_task_states_to_map,
+)
+from src.fsm_core.dispatch_contract import (
     AdvisorDispatchRequest,
-    DispatchResult,
     WorkerDispatchRequest,
-    dispatch_advisor,
-    dispatch_workers_parallel,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +73,18 @@ AUDIT_SRC_DIR: str = "src"
 AUDIT_SCRIPTS_DIR: str = "scripts"
 PYTHON_EXECUTABLE: str = sys.executable
 SUBPROCESS_TIMEOUT_SECONDS: int = 600
+BUG_SCANNER_PAIR_SIZE: int = 2
+DISPATCH_LINE_RE: re.Pattern[str] = re.compile(r"^dispatch:\s*.+$", re.MULTILINE)
+SIMPLE_FIX_HINTS: tuple[str, ...] = (
+    "lint",
+    "format",
+    "style",
+    "typing",
+    "type hint",
+    "import",
+    "unused",
+    "discipline",
+)
 
 
 @dataclass
@@ -70,6 +93,9 @@ class OrchestrateConfig:
 
     workspace: Path
     is_dry_run: bool
+    dispatch_mode: str = app_config.DISPATCH_MODE
+    sync_task_state_to_map: bool = False
+    strict_map_task_state: bool = False
 
 
 @dataclass
@@ -124,8 +150,16 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     args = _parse_args()
-    config = OrchestrateConfig(workspace=Path(args.workspace), is_dry_run=args.dry_run)
+    dispatch_mode = resolve_dispatch_mode(args.dispatch_mode)
+    config = OrchestrateConfig(
+        workspace=Path(args.workspace),
+        is_dry_run=args.dry_run,
+        dispatch_mode=dispatch_mode,
+        sync_task_state_to_map=args.sync_task_state_to_map,
+        strict_map_task_state=args.strict_map_task_state,
+    )
     try:
+        _run_startup_checks(config)
         result = _run_cycle(config)
     except Exception as exc:
         logger.error("Unhandled error in orchestration cycle: %s", exc)
@@ -140,7 +174,49 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FSM orchestrator dispatch loop")
     parser.add_argument("--workspace", default=".", help="Workspace root containing MAP.md")
     parser.add_argument("--dry-run", action="store_true", help="Print planned action without executing")
+    parser.add_argument(
+        "--dispatch-mode",
+        default=app_config.DISPATCH_MODE,
+        help="Dispatch backend mode: claude_session",
+    )
+    parser.add_argument(
+        "--sync-task-state-to-map",
+        action="store_true",
+        help="Fix task frontmatter state fields to match MAP.md before dispatch.",
+    )
+    parser.add_argument(
+        "--strict-map-task-state",
+        action="store_true",
+        help="Exit with error if any MAP.md/task frontmatter state drift is detected.",
+    )
     return parser.parse_args()
+
+
+def _run_startup_checks(config: OrchestrateConfig) -> None:
+    """Run startup preflight and reconciliation checks."""
+    map_path = config.workspace / "MAP.md"
+    if not map_path.exists():
+        return
+    healed = heal_stale_in_progress(config.workspace)
+    for task_id in healed:
+        logger.warning("Auto-healed stale IN_PROGRESS task: %s", task_id)
+    drifts = find_state_drifts(config.workspace, map_path)
+    if drifts and config.sync_task_state_to_map:
+        changed = sync_task_states_to_map(drifts)
+        logger.warning("Synced %d task file state field(s) to MAP.md statuses.", changed)
+        drifts = find_state_drifts(config.workspace, map_path)
+    if not drifts:
+        return
+    for drift in drifts:
+        logger.warning(
+            "State drift: %s MAP=%s task=%s (%s)",
+            drift.task_id,
+            drift.map_status,
+            drift.task_state,
+            drift.task_path,
+        )
+    if config.strict_map_task_state:
+        raise RuntimeError("MAP/task state drift detected. Re-run with --sync-task-state-to-map.")
 
 
 def _build_pipeline_state(tasks: list[TaskInfo]) -> PipelineState:
@@ -156,6 +232,130 @@ def _build_pipeline_state(tasks: list[TaskInfo]) -> PipelineState:
         for t in tasks
     ]
     return PipelineState(tasks=statuses)
+
+
+def _restore_unflagged_to_review(wave_task_ids: list[str], targets: set[str], ctx: CycleContext) -> None:
+    """Move non-targeted EXECUTING tasks back to REVIEW after wave-gate REVISE."""
+    for task_id in wave_task_ids:
+        if task_id in targets:
+            continue
+        info = ctx.task_lookup.get(task_id)
+        if info is None:
+            continue
+        if info.status == "EXECUTING":
+            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
+
+
+def _apply_worker_result(result_task_path: str, exit_code: int, ctx: CycleContext) -> bool:
+    """Apply one worker result to MAP.md. Returns True if matched/applied."""
+    path_to_id = {
+        str(Path(info.task_path).resolve()): info.task_id
+        for info in ctx.task_lookup.values()
+        if info.status == "IN_PROGRESS"
+    }
+    task_id = path_to_id.get(str(Path(result_task_path).resolve()))
+    if task_id is None:
+        return False
+    status = "REVIEW" if exit_code == 0 else "FAILED"
+    update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status=status))
+    return True
+
+
+def _apply_advisor_result(task_paths: tuple[str, ...], exit_code: int, stdout: str, ctx: CycleContext) -> bool:
+    """Apply one legacy single-reviewer result to MAP.md. Returns True if matched/applied."""
+    ids_by_path = {str(Path(info.task_path).resolve()): info.task_id for info in ctx.task_lookup.values()}
+    wave_task_ids: list[str] = []
+    for path in task_paths:
+        task_id = ids_by_path.get(str(Path(path).resolve()))
+        if task_id is None:
+            return False
+        wave_task_ids.append(task_id)
+    if exit_code != 0:
+        for task_id in wave_task_ids:
+            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
+        return True
+    verdict = parse_advisor_output(stdout)
+    if verdict.is_approve:
+        for task_id in wave_task_ids:
+            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="DONE"))
+        return True
+    revise_ctx = WaveReviseContext(wave_task_ids=wave_task_ids, guidance=verdict.guidance)
+    flagged = extract_flagged_task_ids(revise_ctx.guidance, revise_ctx.wave_task_ids)
+    targets = set(flagged if flagged else revise_ctx.wave_task_ids)
+    _restore_unflagged_to_review(revise_ctx.wave_task_ids, targets, ctx)
+    _revise_wave_batch(revise_ctx, ctx)
+    return True
+
+
+def _apply_bug_scanner_pair_results(results: list, ctx: CycleContext) -> bool:
+    """Apply one completed bug-scanner pair result group to MAP.md."""
+    ids_by_path = {str(Path(info.task_path).resolve()): info.task_id for info in ctx.task_lookup.values()}
+    wave_task_ids: list[str] = []
+    for result in results:
+        for path in result.task_paths:
+            task_id = ids_by_path.get(str(Path(path).resolve()))
+            if task_id is None:
+                return False
+            if task_id not in wave_task_ids:
+                wave_task_ids.append(task_id)
+    if any(result.exit_code != 0 for result in results):
+        for task_id in wave_task_ids:
+            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
+        return True
+    verdicts = [parse_advisor_output(result.stdout) for result in results]
+    if all(verdict.is_approve for verdict in verdicts):
+        for task_id in wave_task_ids:
+            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="DONE"))
+        return True
+    guidance_parts = [verdict.guidance for verdict in verdicts if not verdict.is_approve and verdict.guidance]
+    combined_guidance = "\n\n".join(guidance_parts).strip() or "bug-scanner issues"
+    flagged: set[str] = set()
+    for verdict in verdicts:
+        if verdict.is_approve:
+            continue
+        flagged.update(extract_flagged_task_ids(verdict.guidance, wave_task_ids))
+    targets = flagged if flagged else set(wave_task_ids)
+    _restore_unflagged_to_review(wave_task_ids, targets, ctx)
+    _revise_wave_batch(WaveReviseContext(wave_task_ids=wave_task_ids, guidance=combined_guidance), ctx)
+    return True
+
+
+def _apply_pending_claude_session_results(config: OrchestrateConfig, map_path: Path, tasks: list[TaskInfo]) -> int:
+    """Apply pending .fsm-results envelopes into MAP state transitions."""
+    if config.is_dry_run:
+        return 0
+    ctx = CycleContext(config=config, map_path=map_path, task_lookup={t.task_id: t for t in tasks})
+    applied = 0
+    pending_results = read_pending_results(config.workspace)
+    pair_groups: dict[str, list] = {}
+    for result in pending_results:
+        matched = False
+        if result.kind in ("worker", "revise"):
+            matched = _apply_worker_result(result.task_path, result.exit_code, ctx)
+            if matched:
+                mark_result_applied(config.workspace, result.result_path)
+                applied += 1
+            continue
+        if result.kind != "advisor":
+            continue
+        if result.pair_key:
+            pair_groups.setdefault(result.pair_key, []).append(result)
+            continue
+        matched = _apply_advisor_result(result.task_paths, result.exit_code, result.stdout, ctx)
+        if matched:
+            mark_result_applied(config.workspace, result.result_path)
+            applied += 1
+    for grouped in pair_groups.values():
+        expected = max(result.scanner_total for result in grouped)
+        if len(grouped) < expected:
+            continue
+        selected = sorted(grouped, key=lambda item: item.scanner_index)[:expected]
+        if not _apply_bug_scanner_pair_results(selected, ctx):
+            continue
+        for result in selected:
+            mark_result_applied(config.workspace, result.result_path)
+            applied += 1
+    return applied
 
 
 def _should_skip_dispatch(workspace: Path) -> bool:
@@ -182,6 +382,10 @@ def _run_cycle(config: OrchestrateConfig) -> ActionResult:
         tasks = read_task_dispatch_info(request)
     except (FileNotFoundError, LockTimeoutError) as exc:
         return ActionResult(EXIT_ERROR, {"action": "error", "tasks": [], "detail": str(exc)})
+    applied_results = _apply_pending_claude_session_results(config, map_path, tasks)
+    if applied_results > 0:
+        logger.info("Applied %d claude_session result envelope(s).", applied_results)
+        tasks = read_task_dispatch_info(request)
     state = _build_pipeline_state(tasks)
     action = decide_action(state)
     if _should_skip_dispatch(config.workspace):
@@ -234,7 +438,7 @@ def _dispatch_action(action: Action, ctx: CycleContext) -> ActionResult:
 
 def _handle_escalate(action: Action) -> ActionResult:
     """Return BLOCKED exit with escalation detail."""
-    detail = f"{', '.join(action.tasks)} BLOCKED after {MAX_REVISE_ROUNDS} advisor REVISE rounds"
+    detail = f"{', '.join(action.tasks)} BLOCKED after {MAX_REVISE_ROUNDS} bug-scanner REVISE rounds"
     output = {"action": "escalate", "tasks": action.tasks, "detail": detail}
     return ActionResult(EXIT_BLOCKED, output)
 
@@ -364,22 +568,19 @@ def _handle_waiting() -> ActionResult:
 
 
 def _handle_dispatch_wave(action: Action, ctx: CycleContext) -> ActionResult:
-    """Flip PENDING->IN_PROGRESS for all ready tasks, dispatch them IN PARALLEL,
-    then flip each to REVIEW or FAILED based on its exit code.
-
-    True wall-clock parallelism: ThreadPoolExecutor launches N workers at once,
-    each running its own `claude -p` subprocess. Cap: MAX_PARALLEL_WORKERS (8).
-    """
+    """Flip PENDING->IN_PROGRESS for ready tasks and enqueue claude_session intents."""
     valid_ids = [tid for tid in action.tasks if ctx.task_lookup.get(tid)]
     if ctx.config.is_dry_run:
         return _dry_run_wave(valid_ids, action.detail)
     for tid in valid_ids:
         update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=tid, new_status="IN_PROGRESS"))
     requests = [_build_worker_request(tid, ctx) for tid in valid_ids]
-    results = dispatch_workers_parallel(requests)
-    outcomes = list(zip(valid_ids, results))
-    dispatched = _process_parallel_results(outcomes, ctx)
-    output = {"action": "dispatch_wave", "tasks": dispatched, "detail": action.detail}
+    intents = enqueue_worker_intents(ctx.config.workspace, requests)
+    output = {
+        "action": "dispatch_wave",
+        "tasks": valid_ids,
+        "detail": f"Queued {len(intents)} worker intent(s) for claude_session dispatch",
+    }
     return ActionResult(EXIT_ACTION_TAKEN, output)
 
 
@@ -396,52 +597,56 @@ def _build_worker_request(task_id: str, ctx: CycleContext) -> WorkerDispatchRequ
     return WorkerDispatchRequest(task_path=info.task_path, dispatch_role=info.dispatch_role)
 
 
-def _process_parallel_results(outcomes: list[tuple[str, DispatchResult]], ctx: CycleContext) -> list[str]:
-    """Flip each task to REVIEW (on exit 0) or FAILED (non-zero). Returns REVIEW-flipped IDs."""
-    dispatched: list[str] = []
-    for task_id, result in outcomes:
-        if result.exit_code == 0:
-            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="REVIEW"))
-            dispatched.append(task_id)
-        else:
-            logger.error("Worker failed for %s (exit %d)", task_id, result.exit_code)
-            update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="FAILED"))
-    return dispatched
+def _split_bug_scanner_shards(task_paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split wave task paths into two deterministic scanner shards."""
+    unique = sorted({str(Path(path).resolve()) for path in task_paths})
+    if len(unique) < 2:
+        single = unique if unique else task_paths
+        return list(single), list(single)
+    left = [path for idx, path in enumerate(unique) if idx % 2 == 0]
+    right = [path for idx, path in enumerate(unique) if idx % 2 == 1]
+    return left, right
+
+
+def _build_pair_key(task_ids: list[str]) -> str:
+    """Build stable key used to correlate bug-scanner pair result envelopes."""
+    stable = ",".join(sorted(task_ids))
+    return f"pair:{stable}"
 
 
 def _handle_dispatch_advisor(action: Action, ctx: CycleContext) -> ActionResult:
-    """Dispatch advisor for the whole wave batch; handle APPROVE/REVISE/BLOCKED."""
+    """Dispatch bug-scanner pair for the whole wave batch."""
     wave_task_ids = action.tasks
     missing = [tid for tid in wave_task_ids if not ctx.task_lookup.get(tid)]
     if missing:
         return ActionResult(EXIT_ERROR, {"action": "error", "tasks": missing, "detail": "Task info missing"})
     if ctx.config.is_dry_run:
-        logger.info("DRY-RUN: would dispatch advisor for wave batch %s", wave_task_ids)
+        logger.info("DRY-RUN: would dispatch bug-scanner pair for wave batch %s", wave_task_ids)
         output = {"action": "dispatch_advisor", "tasks": wave_task_ids, "detail": action.detail}
         return ActionResult(EXIT_ACTION_TAKEN, output)
-    return _run_advisor_cycle(wave_task_ids, ctx)
-
-
-def _run_advisor_cycle(wave_task_ids: list[str], ctx: CycleContext) -> ActionResult:
-    """Run wave-batch advisor and process APPROVE/REVISE verdict."""
+    for task_id in wave_task_ids:
+        update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=task_id, new_status="EXECUTING"))
     task_paths = [ctx.task_lookup[tid].task_path for tid in wave_task_ids]
-    req = AdvisorDispatchRequest(task_paths=task_paths)
-    dispatch_result = dispatch_advisor(req)
-    if dispatch_result.exit_code != 0:
-        logger.error("Advisor dispatch failed for wave batch %s (exit %d)", wave_task_ids, dispatch_result.exit_code)
-        return ActionResult(EXIT_ERROR, {"action": "error", "tasks": wave_task_ids, "detail": f"Advisor dispatch failed (exit {dispatch_result.exit_code})"})
-    verdict = parse_advisor_output(dispatch_result.stdout)
-    if verdict.is_approve:
-        return _approve_wave_batch(wave_task_ids, ctx)
-    return _revise_wave_batch(WaveReviseContext(wave_task_ids=wave_task_ids, guidance=verdict.guidance), ctx)
-
-
-def _approve_wave_batch(wave_task_ids: list[str], ctx: CycleContext) -> ActionResult:
-    """Flip every REVIEW task in the wave to DONE after advisor APPROVE."""
-    for tid in wave_task_ids:
-        update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=tid, new_status="DONE"))
-    output = {"action": "dispatch_advisor", "tasks": wave_task_ids, "detail": f"APPROVED wave batch ({len(wave_task_ids)} tasks)"}
-    return ActionResult(EXIT_ACTION_TAKEN, output)
+    shard_left, shard_right = _split_bug_scanner_shards(task_paths)
+    pair_key = _build_pair_key(wave_task_ids)
+    intents = [
+        enqueue_advisor_intent(
+            ctx.config.workspace,
+            AdvisorDispatchRequest(task_paths=shard_left),
+            pair_key=pair_key,
+            scanner_index=0,
+            scanner_total=BUG_SCANNER_PAIR_SIZE,
+        ),
+        enqueue_advisor_intent(
+            ctx.config.workspace,
+            AdvisorDispatchRequest(task_paths=shard_right),
+            pair_key=pair_key,
+            scanner_index=1,
+            scanner_total=BUG_SCANNER_PAIR_SIZE,
+        ),
+    ]
+    detail = f"Queued {len(intents)} bug-scanner intents for {len(wave_task_ids)} task(s)"
+    return ActionResult(EXIT_ACTION_TAKEN, {"action": "dispatch_advisor", "tasks": wave_task_ids, "detail": detail})
 
 
 @dataclass(frozen=True)
@@ -455,7 +660,7 @@ class WaveReviseContext:
 def _revise_wave_batch(rctx: WaveReviseContext, ctx: CycleContext) -> ActionResult:
     """Re-dispatch flagged tasks from a wave-batch REVISE verdict.
 
-    Parses advisor guidance for task_ids; each flagged task gets a REVISE round
+    Parses bug-scanner guidance for task_ids; each flagged task gets a REVISE round
     note + flipped REVIEW -> PENDING. If a flagged task has already hit
     MAX_REVISE_ROUNDS, it escalates to BLOCKED.
     """
@@ -487,9 +692,11 @@ def _flag_one_for_revise(request: FlagOneRequest, ctx: CycleContext) -> ActionRe
         update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=request.tid, new_status="BLOCKED"))
         output = {"action": "escalate", "tasks": [request.tid], "detail": f"BLOCKED after {MAX_REVISE_ROUNDS} REVISE rounds"}
         return ActionResult(EXIT_BLOCKED, output)
-    summary = request.guidance[:GUIDANCE_SUMMARY_LIMIT] if request.guidance else "advisor issues"
+    summary = request.guidance[:GUIDANCE_SUMMARY_LIMIT] if request.guidance else "bug-scanner issues"
     entry_config = ReviseEntryConfig(round_number=round_count, nonce=NONCE_PLACEHOLDER, summary=summary)
     _append_revise_entry(info.task_path, build_revise_register_entry(entry_config))
+    repair_role = _select_repair_role(info.dispatch_role, request.guidance)
+    _rewrite_dispatch_role(info.task_path, repair_role)
     update_map_status(StatusUpdateRequest(map_path=ctx.map_path, task_id=request.tid, new_status="PENDING"))
     return None
 
@@ -528,6 +735,25 @@ def _append_revise_entry(task_path: str, entry: str) -> None:
                 updated = content.rstrip() + "\n" + entry + "\n"
             else:
                 updated = content[:next_section] + "\n" + entry + content[next_section:]
+    Path(task_path).write_text(updated, encoding="utf-8")
+
+
+def _select_repair_role(dispatch_role: str, guidance: str) -> str:
+    """Route REVISE work to code-fixer for simple fixes, debugger otherwise."""
+    if dispatch_role == "fsm-integrator":
+        return "debugger"
+    lowered = guidance.lower()
+    if any(hint in lowered for hint in SIMPLE_FIX_HINTS):
+        return "code-fixer"
+    return "debugger"
+
+
+def _rewrite_dispatch_role(task_path: str, dispatch_role: str) -> None:
+    """Set task frontmatter dispatch role for the next re-dispatch cycle."""
+    content = Path(task_path).read_text(encoding="utf-8")
+    updated = DISPATCH_LINE_RE.sub(f"dispatch: {dispatch_role}", content, count=1)
+    if updated == content:
+        return
     Path(task_path).write_text(updated, encoding="utf-8")
 
 

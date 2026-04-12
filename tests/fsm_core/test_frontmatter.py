@@ -139,3 +139,17 @@ name: broken
     def test_returns_task_frontmatter_type(self) -> None:
         fm = parse_frontmatter(VALID_FRONTMATTER)
         assert isinstance(fm, TaskFrontmatter)
+
+    def test_atomize_defaults_to_optional(self) -> None:
+        fm = parse_frontmatter(VALID_FRONTMATTER)
+        assert fm.atomize == "optional"
+
+    def test_parses_atomize_required(self) -> None:
+        content = VALID_FRONTMATTER.replace("checkpoint: abc123", "checkpoint: abc123\natomize: required")
+        fm = parse_frontmatter(content)
+        assert fm.atomize == "required"
+
+    def test_parses_atomize_skip(self) -> None:
+        content = VALID_FRONTMATTER.replace("checkpoint: abc123", "checkpoint: abc123\natomize: skip")
+        fm = parse_frontmatter(content)
+        assert fm.atomize == "skip"

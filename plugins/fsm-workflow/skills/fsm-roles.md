@@ -29,7 +29,7 @@ color: purple
 - `fsm-integrator` — cross-module tasks (3+ directories, factory wiring, test updates)
 
 **Reviewer** (post-execution, pre-audit):
-- `advisor` — post-execution reviewer; returns APPROVE or REVISE verdict (Opus-tier)
+- `bug-scanner` (×2) — paired wave-boundary reviewers. Each scanner reviews a deterministic shard of wave output; unanimous APPROVE required to open the gate.
 
 **Auditors** (parallel, post-execution):
 - `audit_discipline.py` — discipline violations (deterministic AST; replaces `code-auditor` LLM)

@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -83,3 +82,19 @@ def test_negative_wave_raises_value_error() -> None:
             last_updated="2026-04-08T00:00:00.000000Z",
             status="paused",
         )
+
+
+def test_checkpoints_skipped_this_session_round_trip(tmp_path: Path) -> None:
+    """Feature 6c: round-trip checkpoints_skipped_this_session list."""
+    state = SessionState(
+        current_phase="execute",
+        active_wave=1,
+        pipeline_stage="workers_running",
+        last_updated="2026-04-08T12:00:00.000000Z",
+        status="running",
+        checkpoints_skipped_this_session=["task_999", "task_1000"],
+    )
+    write_state(tmp_path, state)
+    result = read_state(tmp_path)
+    assert result is not None
+    assert result.checkpoints_skipped_this_session == ["task_999", "task_1000"]

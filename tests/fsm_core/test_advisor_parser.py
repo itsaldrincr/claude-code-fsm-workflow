@@ -5,6 +5,7 @@ from src.fsm_core.advisor_parser import (
     ReviseEntryConfig,
     build_revise_register_entry,
     count_revise_rounds,
+    extract_flagged_task_ids,
     parse_advisor_output,
 )
 
@@ -151,6 +152,26 @@ class TestReviseEntryConfigDataclass(unittest.TestCase):
         self.assertEqual(config.round_number, 1)
         self.assertEqual(config.nonce, "abc")
         self.assertEqual(config.summary, "test")
+
+
+class TestExtractFlaggedTaskIds(unittest.TestCase):
+    def test_failing_tasks_line_present(self) -> None:
+        guidance = "FAILING TASKS: task_801, task_802\n\nSome other guidance"
+        candidates = ["task_801", "task_802", "task_803"]
+        result = extract_flagged_task_ids(guidance, candidates)
+        self.assertEqual(result, ["task_801", "task_802"])
+
+    def test_failing_tasks_line_absent(self) -> None:
+        guidance = "Some guidance without explicit FAILING TASKS line"
+        candidates = ["task_801", "task_802"]
+        result = extract_flagged_task_ids(guidance, candidates)
+        self.assertEqual(result, [])
+
+    def test_failing_tasks_line_malformed(self) -> None:
+        guidance = "FAILING TASKS: \n\nGarbage content here"
+        candidates = ["task_801", "task_802"]
+        result = extract_flagged_task_ids(guidance, candidates)
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

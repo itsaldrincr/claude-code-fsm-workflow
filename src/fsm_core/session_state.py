@@ -43,7 +43,7 @@ class SessionState:
     pipeline_stage: PipelineStage
     last_updated: str
     status: Status
-    checkpoints_skipped_this_session: bool = False
+    checkpoints_skipped_this_session: list[str] = dataclasses.field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.active_wave < 0:
@@ -87,6 +87,14 @@ def write_state(workspace: Path, state: SessionState) -> None:
     logger.debug("Wrote session state to %s", path)
 
 
+def _coerce_checkpoints(raw: object, caller: str) -> list[str]:
+    """Coerce checkpoints_skipped_this_session to list[str], logging on type mismatch."""
+    if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+        return raw
+    logger.warning("%s: checkpoints_skipped_this_session is %r; coercing to []", caller, raw)
+    return []
+
+
 def _parse_state_file(path: Path) -> SessionState:
     """Parse and validate session_state.json, raising SessionStateError on failure."""
     raw = path.read_text(encoding="utf-8")
@@ -98,7 +106,9 @@ def _parse_state_file(path: Path) -> SessionState:
         pipeline_stage=data["pipeline_stage"],
         last_updated=data["last_updated"],
         status=data["status"],
-        checkpoints_skipped_this_session=data.get("checkpoints_skipped_this_session", False),
+        checkpoints_skipped_this_session=_coerce_checkpoints(
+            data.get("checkpoints_skipped_this_session", []), _parse_state_file.__name__
+        ),
     )
 
 

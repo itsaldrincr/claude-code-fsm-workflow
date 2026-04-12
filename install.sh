@@ -6,6 +6,16 @@
 
 set -euo pipefail
 
+# ── install-deps subcommand ───────────────────────────────────────────────────
+if [ "${1:-}" = "install-deps" ]; then
+    if [ ! -f "requirements.txt" ]; then
+        echo "ERROR: requirements.txt not found in $(pwd)" >&2
+        exit 1
+    fi
+    pip install -r requirements.txt
+    exit 0
+fi
+
 # ── names + paths ──────────────────────────────────────────────────────────────
 readonly HOOK_PRE_READ="pre_read.py"
 readonly HOOK_POST_READ="post_read.py"
@@ -119,18 +129,37 @@ if [ -d "$TEMPLATES_SOURCE_DIR" ]; then
     find "$TEMPLATES_TARGET_DIR/hooks" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
 fi
 
+# ── copy src/ package (fsm_core + config) ────────────────────────────────────
+# orchestrate.py imports from src.config and src.fsm_core.*. /init-workflow
+# copies ~/.claude/src/ into each new project so orchestrate.py can run.
+SRC_SOURCE_DIR="$SOURCE_DIR/src"
+SRC_TARGET_DIR="$HOME/.claude/src"
+if [ -d "$SRC_SOURCE_DIR/fsm_core" ]; then
+    mkdir -p "$SRC_TARGET_DIR/fsm_core"
+    cp "$SRC_SOURCE_DIR/__init__.py" "$SRC_TARGET_DIR/" 2>/dev/null || true
+    cp "$SRC_SOURCE_DIR/config.py" "$SRC_TARGET_DIR/"
+    cp "$SRC_SOURCE_DIR/fsm_core/__init__.py" "$SRC_TARGET_DIR/fsm_core/"
+    cp "$SRC_SOURCE_DIR/fsm_core/"*.py "$SRC_TARGET_DIR/fsm_core/"
+    echo "Installed src/ package to $SRC_TARGET_DIR/ ($(ls "$SRC_TARGET_DIR/fsm_core/"*.py | wc -l | tr -d ' ') fsm_core modules)"
+fi
+
+# ── copy requirements.txt ────────────────────────────────────────────────────
+if [ -f "$SOURCE_DIR/requirements.txt" ]; then
+    cp "$SOURCE_DIR/requirements.txt" "$HOME/.claude/requirements.txt"
+fi
+
 # ── copy orchestrator + audit scripts ─────────────────────────────────────────
 # scripts/orchestrate.py, atomize_task.py, audit_discipline.py, check_deps.py,
-# session_close.py need to be reachable from a known location so /init-workflow
-# can copy them into each new project without hardcoding the repo path.
+# session_close.py, claude_session_driver.py need to be reachable from a known
+# location so /init-workflow can copy them into each new project.
 SCRIPTS_SOURCE_DIR="$SOURCE_DIR/scripts"
 SCRIPTS_TARGET_DIR="$HOME/.claude/scripts"
 if [ -d "$SCRIPTS_SOURCE_DIR" ]; then
     mkdir -p "$SCRIPTS_TARGET_DIR"
-    for script_file in "$SCRIPTS_SOURCE_DIR"/*.py; do
+    for script_file in "$SCRIPTS_SOURCE_DIR"/*.py "$SCRIPTS_SOURCE_DIR"/*.sh; do
         [ -f "$script_file" ] && cp "$script_file" "$SCRIPTS_TARGET_DIR/"
     done
-    find "$SCRIPTS_TARGET_DIR" -type f -name "*.py" -exec chmod +x {} \;
+    find "$SCRIPTS_TARGET_DIR" -type f \( -name "*.py" -o -name "*.sh" \) -exec chmod +x {} \;
 fi
 
 # ── copy skills ──────────────────────────────────────────────────────────────
@@ -229,6 +258,7 @@ echo "  fsm_core target:  $FSM_CORE_TARGET_DIR/"
 echo "  agents target:    $AGENTS_TARGET_DIR/"
 echo "  commands target:  $COMMANDS_TARGET_DIR/"
 echo "  templates target: $TEMPLATES_TARGET_DIR/"
+echo "  src target:       $SRC_TARGET_DIR/"
 echo "  scripts target:   $SCRIPTS_TARGET_DIR/"
 echo "  skills target:    $SKILLS_TARGET_DIR/"
 echo "  enforcement:      $ENFORCEMENT_HOOK_TARGET_DIR/{block-*,surface-*}.sh"

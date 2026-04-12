@@ -1,9 +1,9 @@
 """Atomizer script: splits multi-step task files into single-step sub-tasks."""
 
+import argparse
 import logging
 import re
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +32,7 @@ class AtomizeRequest:
 
     task_paths: list[str]
     map_path: str = "MAP.md"
+    is_dry_run: bool = False
 
 
 @dataclass
@@ -286,10 +287,32 @@ def _compute_output_paths(parent_path: Path, parsed: ParsedTask) -> list[Path]:
     return paths
 
 
+def _should_atomize(frontmatter: TaskFrontmatter) -> bool:
+    """Check if task should be atomized based on atomize field."""
+    return frontmatter.atomize == "required"
+
+
+def _emit_dry_run_action(task_path: str, parsed: ParsedTask) -> None:
+    """Log planned action for a task without executing or writing."""
+    if not _should_atomize(parsed.frontmatter):
+        action = "PASS-THROUGH"
+        reason = f"atomize: {parsed.frontmatter.atomize}"
+    elif len(parsed.steps) <= 1:
+        action = "PASS-THROUGH"
+        reason = "already atomic"
+    else:
+        action = "ATOMIZE"
+        reason = f"{len(parsed.steps)} steps"
+    logger.info("%s — %s (%s)", task_path, action, reason)
+
+
 def atomize_task(task_path: str) -> list[str]:
     """Split a task file into single-step sub-tasks; return created file paths."""
     path = Path(task_path)
     parsed = _parse_task_file(path)
+    if not _should_atomize(parsed.frontmatter):
+        logger.info("Task %s — skipping (atomize: %s)", parsed.frontmatter.id, parsed.frontmatter.atomize)
+        return []
     if len(parsed.steps) <= 1:
         logger.info("Task %s already atomic — skipping", parsed.frontmatter.id)
         return []
@@ -511,23 +534,37 @@ class _RollbackState:
     original_map: str | None
 
 
+def _process_one_task(task_path: str, request: AtomizeRequest, rollback: _RollbackState, rewrites: dict[str, str]) -> None:
+    """Process a single task file for atomization."""
+    parsed = _parse_task_file(Path(task_path))
+    rollback.parent_backups[task_path] = Path(task_path).read_text(encoding="utf-8")
+    _rewrite_parent_depends(task_path, rewrites)
+    if not _should_atomize(parsed.frontmatter):
+        logger.info("Task %s — skipping (atomize: %s)", parsed.frontmatter.id, parsed.frontmatter.atomize)
+        return
+    parent_id = _extract_task_id(task_path)
+    parsed = _parse_task_file(Path(task_path))
+    created = atomize_task(task_path)
+    rollback.created_files.extend(created)
+    if created:
+        rewrites[parent_id] = _extract_task_id(created[-1])
+        _rewrite_map_for_parent(_MapRewriteInput(parent_id, created, request, parsed.sections, parsed.frontmatter.depends))
+
+
 def atomize_tasks(request: AtomizeRequest) -> None:
     """Atomize each task path and update MAP.md for each atomized parent."""
+    if request.is_dry_run:
+        for task_path in request.task_paths:
+            parsed = _parse_task_file(Path(task_path))
+            _emit_dry_run_action(task_path, parsed)
+        return
     map_path = Path(request.map_path)
     original_map = map_path.read_text(encoding="utf-8") if map_path.exists() else None
     rollback = _RollbackState(created_files=[], parent_backups={}, map_path=map_path, original_map=original_map)
     rewrites: dict[str, str] = {}
     try:
         for task_path in request.task_paths:
-            parent_id = _extract_task_id(task_path)
-            rollback.parent_backups[task_path] = Path(task_path).read_text(encoding="utf-8")
-            _rewrite_parent_depends(task_path, rewrites)
-            parsed = _parse_task_file(Path(task_path))
-            created = atomize_task(task_path)
-            rollback.created_files.extend(created)
-            if created:
-                rewrites[parent_id] = _extract_task_id(created[-1])
-                _rewrite_map_for_parent(_MapRewriteInput(parent_id, created, request, parsed.sections, parsed.frontmatter.depends))
+            _process_one_task(task_path, request, rollback, rewrites)
     except Exception:
         _rollback_atomization(rollback)
         raise
@@ -550,13 +587,13 @@ def _rollback_atomization(state: _RollbackState) -> None:
 
 
 def main() -> None:
-    """CLI entry point: python atomize_task.py <task_file> [task_file...]"""
+    """CLI entry point: python atomize_task.py [--dry-run] <task_file> [task_file...]"""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    args = sys.argv[1:]
-    if not args:
-        logger.error("Usage: atomize_task.py <task_file> [task_file ...]")
-        sys.exit(1)
-    request = AtomizeRequest(task_paths=args)
+    parser = argparse.ArgumentParser(description="Atomize multi-step task files into single-step sub-tasks.")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned actions without writing files")
+    parser.add_argument("task_paths", nargs="+", help="Task file paths to atomize")
+    parsed_args = parser.parse_args()
+    request = AtomizeRequest(task_paths=parsed_args.task_paths, is_dry_run=parsed_args.dry_run)
     atomize_tasks(request)
 
 

@@ -457,14 +457,16 @@ class TestMultiParentDepsRewrite(unittest.TestCase):
             first = tmp / "task_901_first.md"
             first.write_text(
                 "---\nid: task_901\nname: first\nstate: PENDING\nstep: 0 of 2\n"
-                "depends: []\nwave: 1\ndispatch: fsm-executor\ncheckpoint: aaa\ncreated: 2026-01-01\n---\n\n"
+                "depends: []\nwave: 1\ndispatch: fsm-executor\ncheckpoint: aaa\ncreated: 2026-01-01\n"
+                "atomize: required\n---\n\n"
                 "## Files\nCreates:\n  a.py\n\n## Program\n1. First A\n2. First B\n",
                 encoding="utf-8",
             )
             second = tmp / "task_902_second.md"
             second.write_text(
                 "---\nid: task_902\nname: second\nstate: PENDING\nstep: 0 of 2\n"
-                "depends: [task_901]\nwave: 2\ndispatch: fsm-integrator\ncheckpoint: bbb\ncreated: 2026-01-01\n---\n\n"
+                "depends: [task_901]\nwave: 2\ndispatch: fsm-integrator\ncheckpoint: bbb\ncreated: 2026-01-01\n"
+                "atomize: required\n---\n\n"
                 "## Files\nModifies:\n  a.py\n\n## Program\n1. Second A\n2. Second B\n",
                 encoding="utf-8",
             )
@@ -476,6 +478,75 @@ class TestMultiParentDepsRewrite(unittest.TestCase):
             self.assertNotIn("depends: [task_901]", content)
             map_after = map_path.read_text(encoding="utf-8")
             self.assertIn("depends: task_901b", map_after)
+
+
+class TestV122MultiStepFixtureStillAtomizes(unittest.TestCase):
+    """Verify v1.2.2 fixture without atomize field still atomizes (opt-in pre-Feature 5).
+
+    This test locks the current behavior before Feature 5 introduces opt-in semantics.
+    After Feature 5 lands, v1.2.2 fixtures will have `atomize: required` added and
+    this test continues to pass. See Feature 5 update path: atomize_task.py will
+    check frontmatter.atomize field; if missing/required, split multi-step tasks.
+    """
+
+    def test_v122_multistep_fixture_still_atomizes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture_copy = Path(tmpdir) / "task_801_sample_feature.md"
+            fixture_copy.write_text(_read_fixture(), encoding="utf-8")
+            created = atomize_task(str(fixture_copy))
+            self.assertEqual(len(created), EXPECTED_STEP_COUNT)
+            self.assertEqual(len(created), 3)
+
+
+class TestSingleStepPassthroughRegressionV122(unittest.TestCase):
+    """Verify single-step task is not atomized (passthrough)."""
+
+    def test_single_step_passthrough_is_noop(self) -> None:
+        single_step_content = _make_single_step_content()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_path = Path(tmpdir) / "task_802_single_step_task.md"
+            task_path.write_text(single_step_content, encoding="utf-8")
+            created = atomize_task(str(task_path))
+            self.assertEqual(created, [])
+            self.assertTrue(task_path.exists())
+            after = task_path.read_text(encoding="utf-8")
+            self.assertEqual(after, single_step_content)
+
+
+class TestAtomizerPreservesFilePaths(unittest.TestCase):
+    """Verify atomization preserves Files section content across sub-tasks."""
+
+    def test_atomizer_preserves_file_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture_copy = Path(tmpdir) / "task_801_sample_feature.md"
+            fixture_copy.write_text(_read_fixture(), encoding="utf-8")
+            content = _read_fixture()
+            parent_sections = parse_sections(content)
+            parent_files = parent_sections.get("Files", "")
+            self.assertTrue(len(parent_files) > 0, "Fixture must have Files section")
+            created = atomize_task(str(fixture_copy))
+            for path in created:
+                subtask_content = Path(path).read_text(encoding="utf-8")
+                self.assertIn(parent_files, subtask_content,
+                             f"Sub-task {path} must contain parent Files section")
+
+
+class TestAtomizerNonceRegeneration(unittest.TestCase):
+    """Verify each sub-task receives a distinct checkpoint nonce."""
+
+    def test_atomizer_nonce_regeneration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture_copy = Path(tmpdir) / "task_801_sample_feature.md"
+            fixture_copy.write_text(_read_fixture(), encoding="utf-8")
+            created = atomize_task(str(fixture_copy))
+            nonces = []
+            for path in created:
+                fm = parse_frontmatter(Path(path).read_text(encoding="utf-8"))
+                self.assertRegex(fm.checkpoint, r"^[0-9a-f]{6}$",
+                                f"Nonce {fm.checkpoint} must be 6-char hex")
+                nonces.append(fm.checkpoint)
+            self.assertEqual(len(nonces), len(set(nonces)),
+                           "All nonces must be unique across sub-tasks")
 
 
 if __name__ == "__main__":

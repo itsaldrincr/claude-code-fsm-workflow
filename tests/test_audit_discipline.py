@@ -21,6 +21,7 @@ from scripts.audit_discipline import (
     _is_public_method,
     _parse_file,
     _walk_python_files,
+    check_file,
 )
 from scripts.audit_discipline import _DisciplineVisitor
 
@@ -270,13 +271,16 @@ class TestBooleanNaming:
 class TestSyntaxErrorSkip:
     """Test F22: files with syntax errors are skipped gracefully."""
 
-    def test_syntax_error_returns_empty(self, tmp_path: Path) -> None:
-        """_audit_file returns [] for files with syntax errors (F22)."""
+    def test_syntax_error_returns_f0_violation(self, tmp_path: Path) -> None:
+        """_audit_file returns a synthetic F0 violation for files with syntax errors."""
         bad_file = tmp_path / "bad.py"
         bad_file.write_text(SOURCE_SYNTAX_ERROR, encoding="utf-8")
         config = _make_config(tmp_path)
         result = _audit_file(bad_file, config)
-        assert result == []
+        assert len(result) == 1
+        assert result[0].rule == "F0"
+        assert result[0].line == 0
+        assert "syntax error" in result[0].detail
 
     def test_syntax_error_does_not_raise(self, tmp_path: Path) -> None:
         """_parse_file returns None (not exception) on syntax error."""
@@ -294,7 +298,8 @@ class TestSyntaxErrorSkip:
         config = _make_config(tmp_path)
         bad_result = _audit_file(bad_file, config)
         good_result = _audit_file(good_file, config)
-        assert bad_result == []
+        assert len(bad_result) == 1
+        assert bad_result[0].rule == "F0"
         assert len(good_result) >= 1
 
 
@@ -380,3 +385,22 @@ class TestMainExitCodes:
             capture_output=True,
         )
         assert result.returncode != 2
+
+
+class TestCheckFilePublic:
+    """Test check_file() public API for direct file auditing."""
+
+    def test_check_file_returns_violations_for_bad_file(self, tmp_path: Path) -> None:
+        """check_file() returns non-empty violation list for file with discipline violations."""
+        bad_file = tmp_path / "bad.py"
+        bad_file.write_text(SOURCE_TOO_MANY_PARAMS, encoding="utf-8")
+        violations = check_file(bad_file)
+        assert len(violations) > 0
+        assert any(v.rule == "F1" and "param" in v.detail for v in violations)
+
+    def test_check_file_returns_empty_for_clean_file(self, tmp_path: Path) -> None:
+        """check_file() returns empty list for file with no violations."""
+        clean_file = tmp_path / "clean.py"
+        clean_file.write_text(SOURCE_CLEAN, encoding="utf-8")
+        violations = check_file(clean_file)
+        assert violations == []

@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 VALID_TRANSITIONS: Dict[str, set[str]] = {
     "PENDING": {"IN_PROGRESS"},
-    "IN_PROGRESS": {"REVIEW", "EXECUTING", "FAILED", "PARTIAL"},
+    "IN_PROGRESS": {"REVIEW", "EXECUTING", "DONE", "FAILED", "PARTIAL"},
     "EXECUTING": {"VERIFY", "FAILED"},
     "VERIFY": {"DONE", "FAILED"},
     "REVIEW": {"DONE", "IN_PROGRESS", "BLOCKED"},

@@ -5,6 +5,7 @@ import ast
 import importlib.util
 import logging
 import sys
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator
@@ -45,6 +46,24 @@ class FileContext:
 
     path: Path
     tree: ast.Module
+
+
+def check_file(path: Path) -> list[Violation]:
+    """Audit a single file and return the list of discipline violations."""
+    config = AuditConfig(directories=[path.parent], workspace_root=Path.cwd())
+    ctx = _parse_file(path)
+    if ctx is None:
+        logger.warning("Could not parse %s — treating as violation", path)
+        return [Violation(
+            file=str(path), line=0, scope="<module>",
+            rule="F0", detail="syntax error — could not parse file",
+        )]
+    visitor = _DisciplineVisitor(config)
+    visitor.visit(ctx.tree)
+    extra = _check_unused_imports(ctx.tree)
+    extra.extend(_check_import_order(ctx.tree, config.workspace_root))
+    raw = visitor.violations + extra
+    return [dataclasses.replace(v, file=str(path)) for v in raw]
 
 
 def _parse_args() -> AuditConfig:
@@ -387,7 +406,7 @@ def _audit_file(path: Path, config: AuditConfig) -> list[Violation]:
     """Parse file and audit for violations; return list of Violation objects."""
     ctx = _parse_file(path)
     if ctx is None:
-        return []
+        return [Violation(file=str(path), line=0, scope="<module>", rule="F0", detail="syntax error — could not parse file")]
     visitor = _DisciplineVisitor(config)
     visitor.visit(ctx.tree)
     extra = _check_unused_imports(ctx.tree)

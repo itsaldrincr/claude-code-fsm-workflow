@@ -159,7 +159,39 @@ def _assemble_slim_template(lines: list[str], output_dir: Path) -> Path:
     """Assemble slim template referencing skills."""
     spec = SectionSpec(lines, '# Coding Discipline SOP', '---')
     discipline = _extract_section(spec)
-    slim_content = f"{discipline}\n\n---\n\n## Task Coordination\n\nThis workspace runs a multi-agent FSM pipeline. Roles never overlap.\n\n## MAP.md write authority\n\n| Agent | Writes |\n|---|---|\n| `task-planner` | Creates/updates MAP.md (atomic with task files) |\n| `session-closer` | Resets MAP.md at end of session |\n| Orchestrator | Flips status fields (PENDING → IN_PROGRESS → DONE) |\n| Everyone else | **Forbidden.** Enforced by `block-map-writes` hook. |\n\n## Worker context isolation\n\nWorkers receive **only one thing**: their task file path. The worker-prompt is exact: `Execute task file: <path>. This task file is self-contained. Read it, follow its Protocol, write code per its Program steps, update Registers with nonce proof, set state to DONE on success.` Workers do not read MAP.md, CLAUDE.md, specs, or any other project context. The task file's `## Files` section lists every path needed. Enforced by the `block-worker-reads` hook.\n\n## Default Behaviour\n\n1. Any request → Orchestrator reads MAP.md first. Active tasks → recovery mode. Clean → fresh start.\n2. Brainstorming in conversation with `spec-writer` and `research-scout` on demand.\n3. User signals \"build it\" → dispatcher takes over auto pipeline.\n4. Workers run autonomously in waves. Orchestrator monitors completions and cascades dependent tasks.\n5. Audit runs automatically when all tasks DONE.\n6. Session closes automatically when tests pass.\n\n## Rules\n\n- **Workers are stateless.** Always read from disk. Never rely on conversation memory.\n- **Every edit covered by a task.** No ad-hoc changes.\n- **Read before write — always.** The nonce proves it. Hooks enforce it.\n- **Write after act — always.** Registers update after every step.\n- **Only `task-planner` and `session-closer` write MAP.md.** The orchestrator flips status fields. Hook-enforced.\n- **Workers never read MAP.md or CLAUDE.md.** Their task file is self-contained. Hook-enforced.\n- **Advisor gates wave transitions, not individual tasks.** Workers cascade freely within a wave. ONE advisor reviews full wave output at boundary.\n- **Use `scripts/orchestrate.py` for dispatch.** The automated dispatch loop reads state, decides action, dispatches agents, and updates MAP.md.\n\n## Project Notes\n\nThis project builds features destined for installation into `~/.claude/` — custom hooks, skills, agent definitions, and harness extensions.\n\n- **Source of truth** lives in this repo. `~/.claude/` holds installed copies (build artifacts). Edit here, then re-install.\n- **Stack**: shell + python. No formal package manager. Python scripts use stdlib only unless a feature requires a library.\n- **Testing**: `python -m pytest tests/ -q` runs 427 tests covering fsm_core, orchestrate.py, atomize_task.py, hooks, repo-map, audit, check_deps, session_close.\n- **Install**: `bash install.sh` copies hooks and scripts to `~/.claude/`, registers hook entries. Idempotent.\n\n---\n\n## Related Skills\n\n- [fsm-roles](/skills/fsm-roles.md) — Agent roles and canonical names\n- [fsm-task-format](/skills/fsm-task-format.md) — Task file structure, states, nonce\n- [fsm-map-format](/skills/fsm-map-format.md) — MAP.md structure and file directory\n- [fsm-workflow-phases](/skills/fsm-workflow-phases.md) — Pipeline phases and wave gate\n- [fsm-hook-enforcement](/skills/fsm-hook-enforcement.md) — Hook system\n- [model-tier-routing](/skills/model-tier-routing.md) — Model tier assignments\n"
+    default_behaviour = _extract_section(SectionSpec(lines, '## Default behaviour', '## Rules'))
+    rules = _extract_section(SectionSpec(lines, '## Rules', '## Model Tier Defaults (Max Account)'))
+    project_notes = _extract_section(SectionSpec(lines, '## Project Notes'))
+    slim_content = (
+        f"{discipline}\n\n"
+        "---\n\n"
+        "## Task Coordination\n\n"
+        "This workspace runs a multi-agent FSM pipeline. Roles never overlap.\n\n"
+        "## MAP.md write authority\n\n"
+        "| Agent | Writes |\n"
+        "|---|---|\n"
+        "| `task-planner` | Creates/updates MAP.md (atomic with task files) |\n"
+        "| `session-closer` | Resets MAP.md at end of session |\n"
+        "| Orchestrator | Flips status fields (PENDING → IN_PROGRESS → DONE) |\n"
+        "| Everyone else | **Forbidden.** Enforced by `block-map-writes` hook. |\n\n"
+        "## Worker context isolation\n\n"
+        "Workers receive **only one thing**: their task file path. "
+        "The worker-prompt is exact: `Execute task file: <path>. This task file is self-contained. "
+        "Read it, follow its Protocol, write code per its Program steps, update Registers with nonce proof, "
+        "set state to DONE on success.` Workers do not read MAP.md, CLAUDE.md, specs, or any other project context. "
+        "The task file's `## Files` section lists every path needed. Enforced by the `block-worker-reads` hook.\n\n"
+        f"{default_behaviour}\n\n"
+        f"{rules}\n\n"
+        f"{project_notes}\n\n"
+        "---\n\n"
+        "## Related Skills\n\n"
+        "- [fsm-roles](/skills/fsm-roles.md) — Agent roles and canonical names\n"
+        "- [fsm-task-format](/skills/fsm-task-format.md) — Task file structure, states, nonce\n"
+        "- [fsm-map-format](/skills/fsm-map-format.md) — MAP.md structure and file directory\n"
+        "- [fsm-workflow-phases](/skills/fsm-workflow-phases.md) — Pipeline phases and wave gate\n"
+        "- [fsm-hook-enforcement](/skills/fsm-hook-enforcement.md) — Hook system\n"
+        "- [model-tier-routing](/skills/model-tier-routing.md) — Model tier assignments\n"
+    )
     path = output_dir / 'CLAUDE.md'
     path.write_text(slim_content)
     return path
