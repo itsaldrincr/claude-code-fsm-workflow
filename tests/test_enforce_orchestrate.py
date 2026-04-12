@@ -96,3 +96,33 @@ class TestEnforceOrchestrate:
         (tmp_path / "scripts" / "orchestrate.py").touch()
         output = _run_hook(_make_payload("", str(tmp_path)))
         assert output == ""
+
+    def test_allows_clean_map_no_actionable_tasks(self, tmp_path: Path) -> None:
+        (tmp_path / "MAP.md").write_text("# MAP\n\n## Active Tasks\n\n— none —\n")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "orchestrate.py").touch()
+        output = _run_hook(_make_payload("code-fixer", str(tmp_path)))
+        assert output == ""
+
+    def test_allows_map_with_only_done_tasks(self, tmp_path: Path) -> None:
+        (tmp_path / "MAP.md").write_text("  [task_801.md] ........ DONE\n")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "orchestrate.py").touch()
+        output = _run_hook(_make_payload("fsm-executor", str(tmp_path)))
+        assert output == ""
+
+    def test_blocks_map_with_review_status(self, tmp_path: Path) -> None:
+        (tmp_path / "MAP.md").write_text("  [task_801.md] ........ REVIEW\n")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "orchestrate.py").touch()
+        output = _run_hook(_make_payload("fsm-executor", str(tmp_path)))
+        result = json.loads(output)
+        assert result["decision"] == "block"
+
+    def test_blocks_map_with_in_progress_status(self, tmp_path: Path) -> None:
+        (tmp_path / "MAP.md").write_text("  [task_801.md] ........ IN_PROGRESS\n")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "orchestrate.py").touch()
+        output = _run_hook(_make_payload("fsm-executor", str(tmp_path)))
+        result = json.loads(output)
+        assert result["decision"] == "block"

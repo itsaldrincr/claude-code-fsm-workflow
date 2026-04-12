@@ -25,6 +25,9 @@ INTENTS_DIR: str = ".fsm-intents"
 RESULTS_DIR: str = ".fsm-results"
 MAP_FILENAME: str = "MAP.md"
 ORCHESTRATE_SCRIPT: str = "scripts/orchestrate.py"
+ACTIONABLE_STATUSES: frozenset[str] = frozenset({
+    "PENDING", "IN_PROGRESS", "REVIEW", "EXECUTING",
+})
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,16 @@ def _parse_event(raw: str) -> AgentCall:
         subagent_type=tool_input.get("subagent_type", ""),
         cwd=data.get("cwd", str(Path.cwd())),
     )
+
+
+def _has_actionable_tasks(workspace: Path) -> bool:
+    """Return True if MAP.md contains tasks with actionable statuses."""
+    map_path = workspace / MAP_FILENAME
+    try:
+        content = map_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return any(status in content for status in ACTIONABLE_STATUSES)
 
 
 def _has_pending_intents(workspace: Path) -> bool:
@@ -79,9 +92,9 @@ def main() -> None:
         return
 
     workspace = Path(call.cwd)
-    if not (workspace / MAP_FILENAME).exists():
-        return
     if not (workspace / ORCHESTRATE_SCRIPT).exists():
+        return
+    if not _has_actionable_tasks(workspace):
         return
 
     if _has_pending_intents(workspace):
