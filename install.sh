@@ -41,6 +41,7 @@ readonly ENFORCEMENT_HOOK_TARGET_DIR="$HOME/.claude/hooks"
 readonly HOOK_BLOCK_MAP_WRITES="block-map-writes.sh"
 readonly HOOK_BLOCK_WORKER_READS="block-worker-reads.sh"
 readonly HOOK_BLOCK_MODEL_OVERRIDE="block-model-override.sh"
+readonly HOOK_ENFORCE_ORCHESTRATE="enforce_orchestrate.py"
 readonly HOOK_SURFACE_MAP_ON_START="surface-map-on-start.sh"
 
 # ── preflight ──────────────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ chmod +x "$PIPELINE_ENFORCE_TARGET_DIR/nudge_orchestrate.py"
 # command advertise as the moat. They live at $HOME/.claude/hooks/ (top level),
 # not in a subdirectory, so they can be referenced directly in settings.json.
 mkdir -p "$ENFORCEMENT_HOOK_TARGET_DIR"
-for hook in "$HOOK_BLOCK_MAP_WRITES" "$HOOK_BLOCK_WORKER_READS" "$HOOK_BLOCK_MODEL_OVERRIDE" "$HOOK_SURFACE_MAP_ON_START"; do
+for hook in "$HOOK_BLOCK_MAP_WRITES" "$HOOK_BLOCK_WORKER_READS" "$HOOK_BLOCK_MODEL_OVERRIDE" "$HOOK_ENFORCE_ORCHESTRATE" "$HOOK_SURFACE_MAP_ON_START"; do
     cp "$ENFORCEMENT_HOOK_SOURCE_DIR/$hook" "$ENFORCEMENT_HOOK_TARGET_DIR/"
     chmod +x "$ENFORCEMENT_HOOK_TARGET_DIR/$hook"
 done
@@ -243,6 +244,7 @@ _merge_hook_entry "PostToolUse"  "Read"                  "$PIPELINE_ENFORCE_TARG
 _merge_hook_entry "PreToolUse"   "Write|Edit|MultiEdit"  "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_BLOCK_MAP_WRITES"
 _merge_hook_entry "PreToolUse"   "Read"                  "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_BLOCK_WORKER_READS"
 _merge_hook_entry "PreToolUse"   "Agent"                 "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_BLOCK_MODEL_OVERRIDE"
+_merge_hook_entry "PreToolUse"   "Agent"                 "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_ENFORCE_ORCHESTRATE"
 _merge_hook_entry "SessionStart" ""                      "$ENFORCEMENT_HOOK_TARGET_DIR/$HOOK_SURFACE_MAP_ON_START"
 
 # ── summary ────────────────────────────────────────────────────────────────────

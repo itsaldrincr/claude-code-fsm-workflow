@@ -18,17 +18,20 @@ Sections within each release:
 
 ---
 
-## [1.2.5] — 2026-04-12
+## [1.2.5] — 2026-04-13
 
-Recovery task closure + session reset. Closed the active recovery verification task wave, validated new office audit coverage, performed session cleanup (MAP.md reset + task file removal).
+Enforce orchestrate.py for pipeline dispatch. New PreToolUse hook blocks direct Agent dispatch of pipeline roles (fsm-executor, fsm-integrator, code-fixer, debugger, bug-scanner) when no pending intents exist — forces the orchestrator to run orchestrate.py first instead of dispatching manually.
+
+### Added
+
+- `enforce_orchestrate.py` — PreToolUse hook on Agent that blocks pipeline role dispatch without pending `.fsm-intents/`. Allows non-pipeline roles (scouts, architect, planner) and brainstorming agents unconditionally.
+- Hook registered in `install.sh` for both copy and `settings.json` merge.
+- Test suite: `tests/test_enforce_orchestrate.py` (8 tests covering all allow/block paths).
 
 ### Changed
 
+- `install.sh` — copies `enforce_orchestrate.py` alongside existing enforcement hooks, registers it on the `PreToolUse Agent` matcher.
 - Clean session state after full wave completion and test pass.
-
-### Validation
-
-- All tests pass (11 files, 49 tests in visualizer suite; 466 tests in core suite).
 
 ---
 
