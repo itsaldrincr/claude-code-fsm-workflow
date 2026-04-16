@@ -3,6 +3,9 @@ from pathlib import Path
 
 from src import config
 from src.fsm_core.claude_session_backend import (
+    AdvisorIntentRequest,
+    AdvisorScannerConfig,
+    ResultPayload,
     dispatch_workers_parallel,
     enqueue_advisor_intent,
     enqueue_worker_intents,
@@ -24,7 +27,7 @@ class TestIntentEnqueue:
 
     def test_enqueue_advisor_intent_creates_file(self, tmp_path: Path) -> None:
         req = AdvisorDispatchRequest(task_paths=[str(tmp_path / "task_001.md")])
-        intent = enqueue_advisor_intent(tmp_path, req)
+        intent = enqueue_advisor_intent(tmp_path, AdvisorIntentRequest(request=req))
         intent_file = tmp_path / config.CLAUDE_SESSION_INTENTS_DIR / f"{intent.intent_id}.json"
         assert intent_file.exists()
 
@@ -35,14 +38,16 @@ class TestPendingIntentsAndResults:
         intent = enqueue_worker_intents(tmp_path, [req])[0]
         pending = read_pending_intents(tmp_path)
         assert len(pending) == 1
-        write_result_for_intent(tmp_path, intent.intent_id, 0, "ok", "")
+        payload = ResultPayload(intent_id=intent.intent_id, exit_code=0, stdout="ok", stderr="")
+        write_result_for_intent(tmp_path, payload)
         pending_after = read_pending_intents(tmp_path)
         assert pending_after == []
 
     def test_write_result_and_read_pending_results(self, tmp_path: Path) -> None:
         req = WorkerDispatchRequest(task_path=str(tmp_path / "task_001.md"), dispatch_role="fsm-executor")
         intent = enqueue_worker_intents(tmp_path, [req])[0]
-        result_path = write_result_for_intent(tmp_path, intent.intent_id, 0, "stdout", "stderr")
+        payload = ResultPayload(intent_id=intent.intent_id, exit_code=0, stdout="stdout", stderr="stderr")
+        result_path = write_result_for_intent(tmp_path, payload)
         assert result_path.exists()
         pending_results = read_pending_results(tmp_path)
         assert len(pending_results) == 1
@@ -53,7 +58,8 @@ class TestPendingIntentsAndResults:
     def test_mark_result_applied_moves_file(self, tmp_path: Path) -> None:
         req = WorkerDispatchRequest(task_path=str(tmp_path / "task_001.md"), dispatch_role="fsm-executor")
         intent = enqueue_worker_intents(tmp_path, [req])[0]
-        result_path = write_result_for_intent(tmp_path, intent.intent_id, 0, "ok", "")
+        payload = ResultPayload(intent_id=intent.intent_id, exit_code=0, stdout="ok", stderr="")
+        result_path = write_result_for_intent(tmp_path, payload)
         moved = mark_result_applied(tmp_path, result_path)
         assert moved.exists()
         assert not result_path.exists()

@@ -29,7 +29,7 @@ color: purple
 - `fsm-integrator` — cross-module tasks (3+ directories, factory wiring, test updates)
 
 **Reviewer** (post-execution, pre-audit):
-- `bug-scanner` (×2) — paired wave-boundary reviewers. Each scanner reviews a deterministic shard of wave output; unanimous APPROVE required to open the gate.
+- `bug-scanner` (×2) — paired wave-boundary reviewers. Each scanner returns APPROVE or REVISE with actionable guidance.
 
 **Auditors** (parallel, post-execution):
 - `audit_discipline.py` — discipline violations (deterministic AST; replaces `code-auditor` LLM)
@@ -48,4 +48,4 @@ color: purple
 
 ## Canonical agent names
 
-The `dispatch` field in task files uses canonical Claude Code subagent type names — `fsm-executor` or `fsm-integrator`, never short forms. The dispatcher copies the value verbatim to the `**Agent:**` line. Short form in a task file = planner bug = ESCALATE.
+The `dispatch` field in task files uses canonical Claude Code subagent type names — `fsm-executor`, `fsm-integrator`, `code-fixer`, or `debugger`, never short forms. The dispatcher copies the value verbatim to the `**Agent:**` line. Short form in a task file = planner bug = ESCALATE.

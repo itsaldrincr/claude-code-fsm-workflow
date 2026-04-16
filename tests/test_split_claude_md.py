@@ -3,20 +3,13 @@
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from scripts.split_claude_md import split, SplitRequest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-FULL_CLAUDE_MD = REPO_ROOT / 'CLAUDE.md'
-COMMITTED_DIR = REPO_ROOT / 'plugins' / 'fsm-workflow'
 
-
-@pytest.mark.skipif(not FULL_CLAUDE_MD.exists(), reason="Full CLAUDE.md not present (only available in harness repo)")
 def test_split_matches_committed_artifacts():
     """Invoke split in tempdir and diff output against committed artifacts."""
-    local_claude = FULL_CLAUDE_MD
-    committed_dir = COMMITTED_DIR
+    local_claude = Path('/Users/alrelador/projects/claude-harness/CLAUDE.md')
+    committed_dir = Path('/Users/alrelador/projects/claude-harness/plugins/fsm-workflow')
 
     with tempfile.TemporaryDirectory() as tmpdir:
         output_dir = Path(tmpdir)

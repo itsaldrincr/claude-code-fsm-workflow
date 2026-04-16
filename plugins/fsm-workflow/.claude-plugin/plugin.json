@@ -1,6 +1,6 @@
 {
   "name": "fsm-workflow",
-  "version": "1.2.2",
+  "version": "1.2.6",
   "description": "Multi-agent FSM workflow for Claude Code. 23 subagents with strict role separation. Discipline is enforced by hooks, not personas — run /fsm-setup-hooks after plugin install to complete the enforcement layer.",
   "author": {
     "name": "itsaldrincr",

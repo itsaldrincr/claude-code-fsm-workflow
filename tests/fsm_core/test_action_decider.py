@@ -268,7 +268,7 @@ class TestWaveCheckpointPending:
     """Test WAVE_CHECKPOINT_PENDING detection."""
 
     def test_single_wave_flag_triggers_checkpoint(self) -> None:
-        """Wave with requires_user_confirmation=True triggers checkpoint when complete."""
+        """Wave with has_user_confirmation=True triggers checkpoint when complete."""
         state = PipelineState(
             tasks=[
                 TaskStatus(
@@ -277,7 +277,7 @@ class TestWaveCheckpointPending:
                     "fsm-executor",
                     [],
                     wave=1,
-                    requires_user_confirmation=True,
+                    has_user_confirmation=True,
                 ),
             ]
         )
@@ -289,14 +289,14 @@ class TestWaveCheckpointPending:
         """Wave 1 without flag completes normally; wave 2 flag triggers checkpoint."""
         state = PipelineState(
             tasks=[
-                TaskStatus("t1", "DONE", "fsm-executor", [], wave=1, requires_user_confirmation=False),
+                TaskStatus("t1", "DONE", "fsm-executor", [], wave=1, has_user_confirmation=False),
                 TaskStatus(
                     "t2",
                     "DONE",
                     "fsm-executor",
                     [],
                     wave=2,
-                    requires_user_confirmation=True,
+                    has_user_confirmation=True,
                 ),
             ]
         )
@@ -305,10 +305,10 @@ class TestWaveCheckpointPending:
         assert action.tasks == ["t2"]
 
     def test_no_checkpoint_when_not_required(self) -> None:
-        """All DONE without requires_user_confirmation cascades to ALL_DONE."""
+        """All DONE without has_user_confirmation cascades to ALL_DONE."""
         state = PipelineState(
             tasks=[
-                TaskStatus("t1", "DONE", "fsm-executor", [], wave=1, requires_user_confirmation=False),
+                TaskStatus("t1", "DONE", "fsm-executor", [], wave=1, has_user_confirmation=False),
             ]
         )
         action = decide_action(state)

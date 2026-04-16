@@ -2,16 +2,21 @@
 
 **Discipline enforced by hooks. Dispatch automated by code. Audits run as scripts, not agents.** A multi-agent pipeline for Claude Code where 23 subagents operate under strict role separation, context isolation, and nonce-proof reads — with an automated dispatch engine that reads state, decides actions, dispatches workers, gates waves through paired bug-scanner review, and audits the output via deterministic AST checks. Brainstorm → spec → architect → plan → atomize → execute → bug-scanner pair gate → audit (scripts) → test → close.
 
-## What's new in v1.2.5
+## What's new in v1.2.6
 
-- **Bug-scanner pair wave gate replaces the single Opus advisor.** Two bug-scanners review wave output in parallel on deterministic file shards. Unanimous APPROVE required to open the gate. REVISE routes flagged tasks to `code-fixer` (simple/mechanical) or `debugger` (complex/logic).
-- **Claude-session dispatch runtime.** Workers and scanners dispatch via intent/result files (`.fsm-intents/`, `.fsm-results/`) through `claude_session_backend.py`. Legacy subprocess dispatch removed.
-- **Three-gate wave pipeline.** (1) `wave_deterministic_gate.evaluate_wave` runs audit + deps + pytest deterministically, (2) `advisor_cache.lookup_verdict` checks content-hash cache, (3) two `bug-scanner` agents on disjoint file shards.
-- **Async daemon mode.** `python scripts/orchestrate.py --daemon` runs a persistent async event loop. One-shot (default, no flag) runs one cycle and exits.
+- **Stdlib-only runtime.** The FSM pipeline (orchestrate.py, fsm_core, audit scripts, hooks) now runs on Python stdlib alone. No SDK, no HTTP client, no `pip install` required. `requirements.txt` is a placeholder kept for install parity.
+- **Claude session is the driver.** The main Claude session (this conversation) loops `orchestrate.py`, reads pending intents from `.fsm-intents/`, dispatches Agent tool calls (`fsm-executor`, `fsm-integrator`, `bug-scanner`, `code-fixer`, `debugger`), writes result envelopes, repeats. No external daemon, no async event loop.
+- **`orchestrate_monitor.sh` + `--daemon` flag removed.** The monitor script was written for an out-of-process SDK driver that no longer exists — the Claude session cannot be driven from a looping shell script.
+- **Slim template regeneration.** `plugins/fsm-workflow/templates/CLAUDE.md` is now deterministically produced from the canonical `CLAUDE.md` via `scripts/split_claude_md.py`. The full workflow text lives in six skill files under `plugins/fsm-workflow/skills/`.
+
+### Carried forward from v1.2.5
+
+- **Bug-scanner pair wave gate.** Two Sonnet bug-scanners review wave output in parallel on deterministic file shards. Unanimous APPROVE required to open the gate. REVISE routes flagged tasks to `code-fixer` (simple/mechanical) or `debugger` (complex/logic).
+- **Claude-session intent/result transport.** Workers and scanners dispatch via `.fsm-intents/` + `.fsm-results/` through `claude_session_backend.py`.
+- **Three-gate wave pipeline.** (1) `wave_deterministic_gate.evaluate_wave` runs audit + deps + pytest deterministically, (2) `advisor_cache.lookup_verdict` checks content-hash cache, (3) two `bug-scanner` agents on disjoint shards.
 - **Opt-in atomization.** `atomize: required` frontmatter field controls which tasks get split. Default `optional` preserves backwards compatibility.
-- **`src/config.py` + 10 new `src/fsm_core/` modules.** Central constants, advisory verdict caching, auto-heal for stale tasks, dispatch routing, orchestrate lock, startup checks, wave deterministic gate, worker heartbeat.
-- **One new dependency: `anthropic>=0.40`.** Install via `bash install.sh install-deps`.
-- **`/init-workflow` now copies full `src/` tree** — `src/config.py` + `src/fsm_core/` (19 modules) + `requirements.txt` into every initialized project. `orchestrate.py` no longer fails with `ModuleNotFoundError` on fresh installs.
+- **`src/config.py` + `src/fsm_core/` modules.** Central constants, verdict caching, auto-heal, dispatch routing, orchestrate lock, startup checks, wave deterministic gate, worker heartbeat.
+- **`/init-workflow` copies full `src/` tree.** `src/config.py` + `src/fsm_core/` + `requirements.txt` into every initialized project. `orchestrate.py` no longer fails with `ModuleNotFoundError` on fresh installs.
 
 ## Why this beats persona-based agent packages
 
@@ -51,7 +56,7 @@ Most multi-agent packages give you "Senior Developer", "UI Expert", "QA Engineer
 ```
 fsm-workflow/
 ├── install.sh                          # idempotent full installer (13 hooks + agents + fsm_core)
-├── requirements.txt                    # anthropic>=0.40
+├── requirements.txt                    # placeholder — FSM pipeline is stdlib-only
 ├── conftest.py                         # root pytest config
 ├── hooks/                              # user-level enforcement hooks
 │   ├── block-map-writes.sh             # only task-planner + session-closer may write MAP.md
@@ -88,7 +93,7 @@ fsm-workflow/
 │   ├── store.py                        # persistent index storage
 │   └── hooks/                          # PreToolUse/PostToolUse/SessionStart hooks
 ├── scripts/                            # CLI tools
-│   ├── orchestrate.py                  # automated dispatch loop (one-shot or --daemon)
+│   ├── orchestrate.py                  # step-function dispatch (one cycle per invocation)
 │   ├── claude_session_driver.py        # intent/result driver bridge
 │   ├── atomize_task.py                 # splits multi-step tasks into single-step sub-tasks
 │   ├── audit_discipline.py             # AST discipline checker — replaces code-auditor LLM
@@ -110,8 +115,7 @@ fsm-workflow/
 
 - **Claude Code** — https://docs.claude.com/en/docs/claude-code
 - **jq** — `brew install jq` (macOS) or `sudo apt install jq` (Linux)
-- **Python 3.11+** — for `src/fsm_core/`, `scripts/`, and pipeline-enforce hooks
-- **`anthropic>=0.40`** — for the claude-session dispatch runtime. Install via `bash install.sh install-deps`
+- **Python 3.11+** (stdlib only) — for `src/fsm_core/`, `scripts/`, and pipeline-enforce hooks
 - **bash** — installer and shell hooks
 
 ## Install
@@ -122,7 +126,6 @@ fsm-workflow/
 git clone https://github.com/itsaldrincr/claude-code-fsm-workflow.git
 cd claude-code-fsm-workflow
 ./install.sh
-./install.sh install-deps   # pip install anthropic>=0.40
 ```
 
 This installs:
@@ -184,17 +187,14 @@ This bootstraps `CLAUDE.md`, `.claude/settings.json`, the discipline gate, `scri
 ### Automated dispatch
 
 ```bash
-# One-shot: run one cycle, print JSON, exit
-python scripts/orchestrate.py --workspace .
-
-# Daemon: persistent async loop until done/blocked
-python scripts/orchestrate.py --workspace . --daemon
+# One cycle per invocation. Orchestrator (the Claude session) loops it.
+PYTHONPATH=. python scripts/orchestrate.py --workspace .
 
 # Preview without executing
-python scripts/orchestrate.py --workspace . --dry-run
+PYTHONPATH=. python scripts/orchestrate.py --workspace . --dry-run
 ```
 
-Reads MAP.md, decides the next action, dispatches one agent, updates state. Stateless between invocations in one-shot mode.
+Reads MAP.md, decides the next action, enqueues worker/scanner intents to `.fsm-intents/`, exits with a status code. The Claude session picks up pending intents and dispatches them as Agent tool calls, writes result envelopes to `.fsm-results/`, then re-runs orchestrate.py to apply them. Stateless between invocations — all state lives on disk.
 
 ## Recovery
 
@@ -250,9 +250,7 @@ Restore your pre-install settings: `cp ~/.claude/settings.json.bak.<timestamp> ~
 
 **Discipline gate blocks every write** — read the violation list in the block reason, fix the file. The agent should do this automatically.
 
-**`ModuleNotFoundError: No module named 'src'`** — `orchestrate.py` requires the `src/` package. Re-run `/init-workflow` or copy `src/` from `~/.claude/src/` to your project root.
-
-**`anthropic` not installed** — run `bash install.sh install-deps` from the repo, or `pip install 'anthropic>=0.40'` directly.
+**`ModuleNotFoundError: No module named 'src'`** — `orchestrate.py` requires the `src/` package. Re-run `/init-workflow` or copy `src/` from `~/.claude/src/` to your project root. Also make sure you invoke it with `PYTHONPATH=. python scripts/orchestrate.py` (the project root must be on `sys.path`).
 
 ## Changelog
 

@@ -18,6 +18,38 @@ Sections within each release:
 
 ---
 
+## [1.2.6] — 2026-04-16
+
+Stdlib-only runtime. The FSM pipeline (orchestrate.py, fsm_core, audit scripts, hooks) now runs on Python stdlib alone — no SDK, no HTTP client, no `pip install` required. `requirements.txt` is reduced to a placeholder kept for install parity. The Claude session drives the loop directly: invoke `orchestrate.py`, read pending intents from `.fsm-intents/`, dispatch Agent tool calls, write result envelopes, repeat.
+
+### Removed
+
+- **`scripts/orchestrate_monitor.sh`** — dead driver script. The monitor was written for an out-of-process SDK driver that no longer exists. The Claude session cannot be driven from a looping shell script, so the file was misleading.
+- **`--daemon` flag on `orchestrate.py`** references throughout docs. `orchestrate.py` is a single-cycle step function; the Claude session loops it.
+- **`anthropic>=0.40` dependency** from `requirements.txt` and `/init-workflow`. Stdlib-only now.
+- **`./install.sh install-deps`** install path — no deps to install.
+
+### Changed
+
+- **`requirements.txt`** — reduced to a placeholder. Kept for install parity but no package listed.
+- **`hooks/enforce_orchestrate.py`** — deny message now references only `PYTHONPATH=. python scripts/orchestrate.py (via Bash)`; removed `orchestrate_monitor.sh (via Monitor)` reference.
+- **`CLAUDE.md`** — replaced "Streaming visibility (preferred)" paragraph with the canonical Claude-session loop description.
+- **All six skill files** (`plugins/fsm-workflow/skills/`) regenerated deterministically from `CLAUDE.md` via `scripts/split_claude_md.py`.
+- **`plugins/fsm-workflow/templates/CLAUDE.md`** regenerated from the canonical `CLAUDE.md`.
+- **`plugins/fsm-workflow/commands/init-workflow.md`** — removed `anthropic>=0.40` dep install step, removed `--daemon` flag reference, replaced with `PYTHONPATH=. python scripts/orchestrate.py`.
+- **`README.md`** — added "What's new in v1.2.6" section, carried forward v1.2.5 notes under a sub-heading, updated dependencies, install, and automated dispatch sections accordingly.
+
+### Fixed
+
+- **`ModuleNotFoundError: No module named 'src'`** — documented in README troubleshooting. Invoke with `PYTHONPATH=. python scripts/orchestrate.py` so the project root is on `sys.path`; or re-run `/init-workflow` to copy `src/` into the project.
+
+### Validation
+
+- `python -m pytest tests/ -q` → **484 passed** locally.
+- `scripts/split_claude_md.py` slim-template artifact test green.
+
+---
+
 ## [1.2.5] — 2026-04-13
 
 Enforce orchestrate.py for pipeline dispatch. New PreToolUse hook blocks direct Agent dispatch of pipeline roles (fsm-executor, fsm-integrator, code-fixer, debugger, bug-scanner) when no pending intents exist — forces the orchestrator to run orchestrate.py first instead of dispatching manually.

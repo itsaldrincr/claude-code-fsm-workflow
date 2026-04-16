@@ -8,6 +8,7 @@ wave: 2
 dispatch: fsm-executor
 checkpoint: abc123
 created: 2026-04-10
+atomize: required
 ---
 
 ## Files

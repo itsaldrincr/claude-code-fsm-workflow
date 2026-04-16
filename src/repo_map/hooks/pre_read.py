@@ -67,10 +67,17 @@ class HookResponse:
 def _get_logger() -> logging.Logger:
     """Return a logger that writes to LOG_DIR if it exists, else a no-op logger."""
     log = logging.getLogger(__name__)
+    if log.handlers:
+        return log
+    log.propagate = False
     if not LOG_DIR.exists():
         log.addHandler(logging.NullHandler())
         return log
-    handler = logging.FileHandler(LOG_DIR / "pre_read.log")
+    try:
+        handler = logging.FileHandler(LOG_DIR / "pre_read.log")
+    except OSError:
+        log.addHandler(logging.NullHandler())
+        return log
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     log.addHandler(handler)
     log.setLevel(logging.DEBUG)

@@ -103,8 +103,7 @@ def main() -> None:
     _deny(
         f"Direct dispatch of '{call.subagent_type}' blocked. "
         "No pending intents in .fsm-intents/ — run orchestrate.py first. "
-        "Use: bash scripts/orchestrate_monitor.sh (via Monitor) or "
-        "PYTHONPATH=. python scripts/orchestrate.py (via Bash)."
+        "Use: PYTHONPATH=. python scripts/orchestrate.py (via Bash)."
     )
 
 

@@ -18,7 +18,14 @@ from scripts.orchestrate import (
     _run_cycle,
     _run_startup_checks,
 )
-from src.fsm_core.claude_session_backend import enqueue_advisor_intent, enqueue_worker_intents, write_result_for_intent
+from src.fsm_core.claude_session_backend import (
+    AdvisorIntentRequest,
+    AdvisorScannerConfig,
+    ResultPayload,
+    enqueue_advisor_intent,
+    enqueue_worker_intents,
+    write_result_for_intent,
+)
 from src.fsm_core.dispatch_contract import WorkerDispatchRequest
 
 
@@ -124,6 +131,14 @@ def _make_config(workspace: Path, *, is_dry_run: bool = False) -> OrchestrateCon
     return OrchestrateConfig(workspace=workspace, is_dry_run=is_dry_run, dispatch_mode="claude_session")
 
 
+def _enqueue_advisor(workspace: Path, task_path: Path, scanner_config: AdvisorScannerConfig | None = None):
+    """Test helper: enqueue an advisor intent with minimal boilerplate."""
+    from src.fsm_core.dispatch_contract import AdvisorDispatchRequest as ADR
+    req = ADR(task_paths=[str(task_path)])
+    cfg = scanner_config or AdvisorScannerConfig()
+    return enqueue_advisor_intent(workspace, AdvisorIntentRequest(request=req, scanner_config=cfg))
+
+
 class TestBasicCycle:
     def test_missing_map_returns_exit_error(self, tmp_path: Path) -> None:
         result = _run_cycle(_make_config(tmp_path))
@@ -197,7 +212,8 @@ class TestResultApplication:
         fx = _build_workspace(tmp_path, MAP_IN_PROGRESS, "IN_PROGRESS")
         worker_req = WorkerDispatchRequest(task_path=str(fx.task_path), dispatch_role="fsm-executor")
         worker_intent = enqueue_worker_intents(fx.workspace, [worker_req])[0]
-        write_result_for_intent(fx.workspace, worker_intent.intent_id, 0, "ok", "")
+        payload = ResultPayload(intent_id=worker_intent.intent_id, exit_code=0, stdout="ok", stderr="")
+        write_result_for_intent(fx.workspace, payload)
         mock_adv_enqueue.return_value = MagicMock(intent_id="intent_adv")
         result = _run_cycle(_make_config(fx.workspace))
         assert result.exit_code == EXIT_ACTION_TAKEN
@@ -213,8 +229,9 @@ class TestResultApplication:
         self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
     ) -> None:
         fx = _build_workspace(tmp_path, MAP_EXECUTING, "EXECUTING")
-        advisor_intent = enqueue_advisor_intent(fx.workspace, request=MagicMock(task_paths=[str(fx.task_path)]))
-        write_result_for_intent(fx.workspace, advisor_intent.intent_id, 0, "APPROVE\nok", "")
+        advisor_intent = _enqueue_advisor(fx.workspace, fx.task_path)
+        payload = ResultPayload(intent_id=advisor_intent.intent_id, exit_code=0, stdout="APPROVE\nok", stderr="")
+        write_result_for_intent(fx.workspace, payload)
         mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
         mock_close.return_value = True
         result = _run_cycle(_make_config(fx.workspace))
@@ -227,22 +244,16 @@ class TestResultApplication:
         self, mock_close: MagicMock, mock_audit: MagicMock, tmp_path: Path
     ) -> None:
         fx = _build_workspace(tmp_path, MAP_EXECUTING, "EXECUTING")
-        left = enqueue_advisor_intent(
-            fx.workspace,
-            request=MagicMock(task_paths=[str(fx.task_path)]),
-            pair_key="pair:task_001",
-            scanner_index=0,
-            scanner_total=2,
-        )
-        right = enqueue_advisor_intent(
-            fx.workspace,
-            request=MagicMock(task_paths=[str(fx.task_path)]),
-            pair_key="pair:task_001",
-            scanner_index=1,
-            scanner_total=2,
-        )
-        write_result_for_intent(fx.workspace, left.intent_id, 0, "APPROVE\nleft", "")
-        write_result_for_intent(fx.workspace, right.intent_id, 0, "APPROVE\nright", "")
+        left = _enqueue_advisor(fx.workspace, fx.task_path, AdvisorScannerConfig(
+            pair_key="pair:task_001", scanner_index=0, scanner_total=2,
+        ))
+        right = _enqueue_advisor(fx.workspace, fx.task_path, AdvisorScannerConfig(
+            pair_key="pair:task_001", scanner_index=1, scanner_total=2,
+        ))
+        left_payload = ResultPayload(intent_id=left.intent_id, exit_code=0, stdout="APPROVE\nleft", stderr="")
+        write_result_for_intent(fx.workspace, left_payload)
+        right_payload = ResultPayload(intent_id=right.intent_id, exit_code=0, stdout="APPROVE\nright", stderr="")
+        write_result_for_intent(fx.workspace, right_payload)
         mock_audit.return_value = AuditGateResult(is_clean=True, detail="audit clean")
         mock_close.return_value = True
         result = _run_cycle(_make_config(fx.workspace))
@@ -251,14 +262,11 @@ class TestResultApplication:
 
     def test_bug_scanner_pair_waits_for_both_results(self, tmp_path: Path) -> None:
         fx = _build_workspace(tmp_path, MAP_EXECUTING, "EXECUTING")
-        left = enqueue_advisor_intent(
-            fx.workspace,
-            request=MagicMock(task_paths=[str(fx.task_path)]),
-            pair_key="pair:task_001",
-            scanner_index=0,
-            scanner_total=2,
-        )
-        write_result_for_intent(fx.workspace, left.intent_id, 0, "APPROVE\nleft", "")
+        left = _enqueue_advisor(fx.workspace, fx.task_path, AdvisorScannerConfig(
+            pair_key="pair:task_001", scanner_index=0, scanner_total=2,
+        ))
+        left_payload = ResultPayload(intent_id=left.intent_id, exit_code=0, stdout="APPROVE\nleft", stderr="")
+        write_result_for_intent(fx.workspace, left_payload)
         result = _run_cycle(_make_config(fx.workspace))
         assert result.exit_code == EXIT_WAITING
         assert "EXECUTING" in fx.map_path.read_text(encoding="utf-8")
@@ -270,9 +278,10 @@ class TestResultApplication:
         self, mock_worker_enqueue: MagicMock, tmp_path: Path
     ) -> None:
         fx = _build_workspace(tmp_path, MAP_EXECUTING, "EXECUTING")
-        advisor_intent = enqueue_advisor_intent(fx.workspace, request=MagicMock(task_paths=[str(fx.task_path)]))
+        advisor_intent = _enqueue_advisor(fx.workspace, fx.task_path)
         revise_text = "REVISE\nFAILING TASKS: task_001\nfix it"
-        write_result_for_intent(fx.workspace, advisor_intent.intent_id, 0, revise_text, "")
+        payload = ResultPayload(intent_id=advisor_intent.intent_id, exit_code=0, stdout=revise_text, stderr="")
+        write_result_for_intent(fx.workspace, payload)
         mock_worker_enqueue.return_value = [MagicMock(intent_id="intent_worker")]
         result = _run_cycle(_make_config(fx.workspace))
         assert result.exit_code == EXIT_ACTION_TAKEN
@@ -286,9 +295,10 @@ class TestResultApplication:
         self, mock_worker_enqueue: MagicMock, tmp_path: Path
     ) -> None:
         fx = _build_workspace(tmp_path, MAP_EXECUTING, "EXECUTING")
-        advisor_intent = enqueue_advisor_intent(fx.workspace, request=MagicMock(task_paths=[str(fx.task_path)]))
+        advisor_intent = _enqueue_advisor(fx.workspace, fx.task_path)
         revise_text = "REVISE\nFAILING TASKS: task_001\nlint and import cleanup required"
-        write_result_for_intent(fx.workspace, advisor_intent.intent_id, 0, revise_text, "")
+        payload = ResultPayload(intent_id=advisor_intent.intent_id, exit_code=0, stdout=revise_text, stderr="")
+        write_result_for_intent(fx.workspace, payload)
         mock_worker_enqueue.return_value = [MagicMock(intent_id="intent_worker")]
         result = _run_cycle(_make_config(fx.workspace))
         assert result.exit_code == EXIT_ACTION_TAKEN
@@ -303,8 +313,9 @@ class TestResultApplication:
             "## Registers\nREVISE round 1 (nonce 000000): x\nREVISE round 2 (nonce 000000): y\nREVISE round 3 (nonce 000000): z",
         )
         fx.task_path.write_text(content, encoding="utf-8")
-        advisor_intent = enqueue_advisor_intent(fx.workspace, request=MagicMock(task_paths=[str(fx.task_path)]))
-        write_result_for_intent(fx.workspace, advisor_intent.intent_id, 0, "REVISE\nFAILING TASKS: task_001\nstill bad", "")
+        advisor_intent = _enqueue_advisor(fx.workspace, fx.task_path)
+        payload = ResultPayload(intent_id=advisor_intent.intent_id, exit_code=0, stdout="REVISE\nFAILING TASKS: task_001\nstill bad", stderr="")
+        write_result_for_intent(fx.workspace, payload)
         result = _run_cycle(_make_config(fx.workspace))
         assert result.exit_code == EXIT_BLOCKED
         assert "BLOCKED" in fx.map_path.read_text(encoding="utf-8")
@@ -317,7 +328,7 @@ class TestStartupChecks:
             workspace=fx.workspace,
             is_dry_run=False,
             dispatch_mode="claude_session",
-            strict_map_task_state=True,
+            should_strict_map_check=True,
         )
         with pytest.raises(RuntimeError):
             _run_startup_checks(config)
@@ -328,7 +339,7 @@ class TestStartupChecks:
             workspace=fx.workspace,
             is_dry_run=False,
             dispatch_mode="claude_session",
-            sync_task_state_to_map=True,
+            should_sync_task_state=True,
         )
         _run_startup_checks(config)
         content = fx.task_path.read_text(encoding="utf-8")

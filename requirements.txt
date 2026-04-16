@@ -1,2 +1,3 @@
-# v1.2.3 pipeline speed — raw anthropic SDK only
-anthropic>=0.40
+# FSM pipeline runs on stdlib-only Python. No third-party deps required
+# for orchestrate.py / fsm_core / audit scripts. This file exists for any
+# optional tooling (e.g. pytest dev-time) and is intentionally empty.
